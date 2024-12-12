@@ -630,6 +630,7 @@ pub struct Editor {
     inlay_hint_cache: InlayHintCache,
     diff_map: DiffMap,
     next_inlay_id: usize,
+    expr_inlay_id: Option<InlayId>,
     _subscriptions: Vec<Subscription>,
     pixel_position_of_newest_cursor: Option<gpui::Point<Pixels>>,
     gutter_dimensions: GutterDimensions,
@@ -1232,6 +1233,7 @@ impl Editor {
             find_all_references_task_sources: Vec::new(),
             next_completion_id: 0,
             next_inlay_id: 0,
+            expr_inlay_id: None,
             code_action_providers,
             available_code_actions: Default::default(),
             code_actions_task: Default::default(),
@@ -4645,10 +4647,14 @@ impl Editor {
             anchor,
             text_with_alignment,
         );
+        let mut to_remove = Vec::new();
+        if let Some(id) = self.expr_inlay_id {
+            to_remove.push(id);
+        }
+        self.expr_inlay_id = Some(completion_inlay.id);
 
-        // TODO: remove old inlays.
         self.display_map.update(cx, move |map, cx| {
-            map.splice_inlays(Vec::new(), vec![completion_inlay], cx)
+            map.splice_inlays(to_remove, vec![completion_inlay], cx)
         });
         cx.notify();
     }

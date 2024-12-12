@@ -1,6 +1,6 @@
 use crate::components::KernelListItem;
 use crate::kernels::RemoteRunningKernel;
-use crate::{eval_expression, setup_editor_session_actions};
+use crate::setup_editor_session_actions;
 use crate::{
     kernels::{Kernel, KernelSpecification, NativeRunningKernel},
     outputs::{ExecutionStatus, ExecutionView},
@@ -8,7 +8,6 @@ use crate::{
 };
 use client::telemetry::Telemetry;
 use collections::{HashMap, HashSet};
-use editor::EditorEvent;
 use editor::{
     display_map::{
         BlockContext, BlockId, BlockPlacement, BlockProperties, BlockStyle, CustomBlockId,
@@ -24,7 +23,7 @@ use gpui::{
 use language::Point;
 use project::Fs;
 use runtimelib::{
-    ExecuteRequest, ExecutionState, InterruptRequest, JupyterMessage, JupyterMessageContent, Media,
+    ExecuteRequest, ExecutionState, InterruptRequest, JupyterMessage, JupyterMessageContent,
     MediaType, ShutdownRequest,
 };
 use std::{env::temp_dir, ops::Range, sync::Arc, time::Duration};
@@ -41,7 +40,6 @@ pub struct Session {
     pub kernel_specification: KernelSpecification,
     telemetry: Arc<Telemetry>,
     _buffer_subscription: Subscription,
-    pending_task: Option<Task<()>>,
 }
 
 struct EditorBlock {
@@ -226,7 +224,6 @@ impl Session {
             kernel_specification,
             _buffer_subscription: subscription,
             telemetry,
-            pending_task: None,
         };
         session.start_kernel(cx);
 
@@ -549,7 +546,7 @@ impl Session {
                         _ => String::new(),
                     };
                     println!("Response received: {:#?}", output);
-                    if (!output.is_empty()) {
+                    if !output.is_empty() {
                         editor.show_expression_value(&output, *line_number, cx);
                     }
                     cx.notify();

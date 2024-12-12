@@ -133,25 +133,43 @@ pub fn init(cx: &mut AppContext) {
                 .detach();
 
             let editor_view = cx.view().clone();
-            editor_handle.update(cx, |_editor, cx| {
-                cx.subscribe(&editor_view, {
-                    move |_session, _editor, event, cx| match event {
-                        EditorEvent::BufferEdited => {
-                            println!("Buffer edited");
-                            editor.pending_task = None;
-                            editor.pending_task = Some(cx.spawn(|_, mut _cx| async move {
-                                _cx.background_executor()
-                                    .timer(Duration::from_millis(5_000))
-                                    .await;
+            cx.subscribe(&editor_view, {
+                let editor_handle = editor_handle.clone();
+                move |_editor, view, event, _cx| match event {
+                    EditorEvent::BufferEdited => {
+                        println!("Buffer edited");
+                        let handle = editor_handle.clone();
+                        _editor.pending_task = None;
+                        _editor.pending_task = Some(_cx.spawn(|_, mut cx2| async move {
+                            cx2.background_executor()
+                                .timer(Duration::from_millis(50))
+                                .await;
+                            cx2.update(|cx2| {
+                                crate::eval_line(handle, cx2);
                                 println!("No keypress since 5ms.");
-                                crate::eval_line(editor_handle.clone(), cx);
-                            }));
-                        }
-                        _ => println!("Event {:#?} ", event),
+                            })
+                            .ok();
+                        }));
                     }
-                })
-                .detach();
-            });
+                    EditorEvent::SelectionsChanged { local } => {
+                        println!("Selection changed");
+                        let handle = editor_handle.clone();
+                        _editor.pending_task = None;
+                        _editor.pending_task = Some(_cx.spawn(|_, mut cx2| async move {
+                            cx2.background_executor()
+                                .timer(Duration::from_millis(50))
+                                .await;
+                            cx2.update(|cx2| {
+                                crate::eval_line(handle, cx2);
+                                println!("No keypress since 5ms.");
+                            })
+                            .ok();
+                        }));
+                    }
+                    _ => {}
+                }
+            })
+            .detach();
         });
     })
     .detach();

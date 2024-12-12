@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use editor::{Editor, EditorEvent};
+use editor::Editor;
 use gpui::{prelude::*, Entity, View, WeakView, WindowContext};
 use language::{BufferSnapshot, Language, LanguageName, Point};
 use project::{ProjectItem as _, WorktreeId};
@@ -299,6 +299,7 @@ pub fn eval_line(editor: WeakView<Editor>, cx: &mut WindowContext) {
         Ok(ln) => ln.start.row,
         Err(_) => return,
     };
+    println!("Got some session at line {:#?}", line_num);
 
     let Some(editor) = editor.upgrade() else {
         return;
