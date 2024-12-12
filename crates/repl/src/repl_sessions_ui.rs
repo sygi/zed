@@ -23,7 +23,8 @@ actions!(
         Interrupt,
         Shutdown,
         Restart,
-        RefreshKernelspecs
+        RefreshKernelspecs,
+        EvalExpression
     ]
 );
 
@@ -112,6 +113,19 @@ pub fn init(cx: &mut AppContext) {
                         }
 
                         crate::run(editor_handle.clone(), false, cx).log_err();
+                    }
+                })
+                .detach();
+
+            editor
+                .register_action({
+                    let editor_handle = editor_handle.clone();
+                    move |_: &EvalExpression, cx| {
+                        if !JupyterSettings::enabled(cx) {
+                            return;
+                        }
+
+                        crate::eval_expression(editor_handle.clone(), cx);
                     }
                 })
                 .detach();

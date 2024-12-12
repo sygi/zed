@@ -275,6 +275,37 @@ pub fn restart(editor: WeakView<Editor>, cx: &mut WindowContext) {
         cx.notify();
     });
 }
+pub fn eval_expression(editor: WeakView<Editor>, cx: &mut WindowContext) {
+    let store = ReplStore::global(cx);
+    let entity_id = editor.entity_id();
+    let Some(session) = store.read(cx).get_session(entity_id).cloned() else {
+        return;
+    };
+
+    let line_num = editor.update(cx, |editor, cx| editor.selections.newest::<Point>(cx));
+
+    let line_num = match line_num {
+        Ok(ln) => ln.start.row,
+        Err(_) => return,
+    };
+
+    let Some(editor) = editor.upgrade() else {
+        return;
+    };
+    let multibuffer = editor.read(cx).buffer().clone();
+    let Some(buffer) = multibuffer.read(cx).as_singleton() else {
+        return;
+    };
+    let current_line = buffer.read(cx).get_line(line_num);
+    let current_line: String = current_line.collect::<Vec<_>>().join("");
+    println!("Line: {:#?}\nRow: {:#?}", current_line, line_num);
+
+    session.update(cx, |session, cx| {
+        println!("Running eval expression");
+        session.eval_expression(current_line, cx);
+        cx.notify();
+    });
+}
 
 pub fn setup_editor_session_actions(editor: &mut Editor, editor_handle: WeakView<Editor>) {
     editor

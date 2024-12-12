@@ -4622,6 +4622,17 @@ impl Editor {
         Some(active_inline_completion.completion)
     }
 
+    pub fn show_expression_value(&mut self, value: &str, cx: &mut ViewContext<Self>) {
+        let selection = self.selections.newest_anchor();
+        let cursor = selection.head();
+        let completion_inlay = Inlay::suggestion(post_inc(&mut self.next_inlay_id), cursor, value);
+
+        self.display_map.update(cx, move |map, cx| {
+            map.splice_inlays(Vec::new(), vec![completion_inlay], cx)
+        });
+        cx.notify();
+    }
+
     fn update_visible_inline_completion(&mut self, cx: &mut ViewContext<Self>) -> Option<()> {
         let selection = self.selections.newest_anchor();
         let cursor = selection.head();

@@ -26,7 +26,9 @@ use runtimelib::{
     ExecuteRequest, ExecutionState, InterruptRequest, JupyterMessage, JupyterMessageContent,
     ShutdownRequest,
 };
-use std::{env::temp_dir, ops::Range, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap as StdHashMap, env::temp_dir, ops::Range, sync::Arc, time::Duration,
+};
 use theme::ActiveTheme;
 use ui::{prelude::*, IconButtonShape, Tooltip};
 use util::ResultExt as _;
@@ -36,6 +38,7 @@ pub struct Session {
     editor: WeakView<Editor>,
     pub kernel: Kernel,
     blocks: HashMap<String, EditorBlock>,
+    eval_requests: HashMap<String, String>,
     pub kernel_specification: KernelSpecification,
     telemetry: Arc<Telemetry>,
     _buffer_subscription: Subscription,
@@ -219,6 +222,7 @@ impl Session {
             editor,
             kernel: Kernel::StartingKernel(Task::ready(()).shared()),
             blocks: HashMap::default(),
+            eval_requests: HashMap::default(),
             kernel_specification,
             _buffer_subscription: subscription,
             telemetry,
@@ -479,6 +483,7 @@ impl Session {
     }
 
     pub fn route(&mut self, message: &JupyterMessage, cx: &mut ViewContext<Self>) {
+        println!("Routing {:#?}", message);
         let parent_message_id = match message.parent_header.as_ref() {
             Some(header) => &header.msg_id,
             None => return,
@@ -625,6 +630,39 @@ impl Session {
             }
         }
         cx.notify();
+    }
+
+    pub fn eval_expression(&mut self, expression: String, cx: &mut ViewContext<Self>) {
+        println!("Evaling {:#?}", expression);
+
+        let Some(editor) = self.editor.upgrade() else {
+            return;
+        };
+
+        editor.update(cx, |editor, cx| {
+            println!("Running eval expression");
+            editor.show_expression_value(&expression, cx);
+            cx.notify();
+        });
+
+        if expression.is_empty() {
+            return;
+        }
+
+        let mut map: StdHashMap<String, String> = StdHashMap::new();
+        map.insert(String::from("exp"), expression.clone());
+
+        let execute_request = ExecuteRequest {
+            code: "1 + 1".to_string(),
+            //user_expressions: Some(map),
+            ..ExecuteRequest::default()
+        };
+        println!("Will send execute Request: {:#?}", execute_request);
+        let message: JupyterMessage = execute_request.into();
+
+        self.eval_requests
+            .insert(message.header.msg_id.clone(), expression);
+        self.send(message, cx).ok();
     }
 }
 

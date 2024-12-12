@@ -231,8 +231,10 @@ impl NativeRunningKernel {
             let shell_task = cx.background_executor().spawn({
                 async move {
                     while let Some(message) = shell_request_rx.next().await {
+                        println!("Sending shell message: {:#?}", message);
                         shell_socket.send(message).await.ok();
                         let reply = shell_socket.read().await?;
+                        println!("Receiving shell reply: {:#?}", reply);
                         shell_reply_tx.send(reply).await?;
                     }
                     anyhow::Ok(())

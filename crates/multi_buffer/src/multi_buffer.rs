@@ -2475,8 +2475,14 @@ impl MultiBufferSnapshot {
         self.chunks(range, false).map(|chunk| chunk.text)
     }
 
+    pub fn get_line(&self, line_num: u32) -> impl Iterator<Item = &str> + '_ {
+        self.text_for_range(
+            Point::new(line_num, 0)..Point::new(line_num, self.line_len(MultiBufferRow(line_num))),
+        )
+    }
+
     pub fn is_line_blank(&self, row: MultiBufferRow) -> bool {
-        self.text_for_range(Point::new(row.0, 0)..Point::new(row.0, self.line_len(row)))
+        self.get_line(row.0)
             .all(|chunk| chunk.matches(|c: char| !c.is_whitespace()).next().is_none())
     }
 

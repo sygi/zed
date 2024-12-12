@@ -2095,8 +2095,12 @@ impl BufferSnapshot {
         LineIndent::from_iter(self.chars_at(Point::new(row, 0)))
     }
 
-    pub fn is_line_blank(&self, row: u32) -> bool {
+    pub fn get_line(&self, row: u32) -> impl Iterator<Item = &str> + '_ {
         self.text_for_range(Point::new(row, 0)..Point::new(row, self.line_len(row)))
+    }
+
+    pub fn is_line_blank(&self, row: u32) -> bool {
+        self.get_line(row)
             .all(|chunk| chunk.matches(|c: char| !c.is_whitespace()).next().is_none())
     }
 
