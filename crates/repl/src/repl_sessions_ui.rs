@@ -1,4 +1,6 @@
-use editor::Editor;
+use std::time::Duration;
+
+use editor::{Editor, EditorEvent};
 use gpui::{
     actions, prelude::*, AnyElement, AppContext, EventEmitter, FocusHandle, FocusableView,
     Subscription, View,
@@ -125,10 +127,31 @@ pub fn init(cx: &mut AppContext) {
                             return;
                         }
 
-                        crate::eval_expression(editor_handle.clone(), cx);
+                        crate::eval_line(editor_handle.clone(), cx);
                     }
                 })
                 .detach();
+
+            let editor_view = cx.view().clone();
+            editor_handle.update(cx, |_editor, cx| {
+                cx.subscribe(&editor_view, {
+                    move |_session, _editor, event, cx| match event {
+                        EditorEvent::BufferEdited => {
+                            println!("Buffer edited");
+                            editor.pending_task = None;
+                            editor.pending_task = Some(cx.spawn(|_, mut _cx| async move {
+                                _cx.background_executor()
+                                    .timer(Duration::from_millis(5_000))
+                                    .await;
+                                println!("No keypress since 5ms.");
+                                crate::eval_line(editor_handle.clone(), cx);
+                            }));
+                        }
+                        _ => println!("Event {:#?} ", event),
+                    }
+                })
+                .detach();
+            });
         });
     })
     .detach();

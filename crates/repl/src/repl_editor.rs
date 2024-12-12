@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use editor::Editor;
+use editor::{Editor, EditorEvent};
 use gpui::{prelude::*, Entity, View, WeakView, WindowContext};
 use language::{BufferSnapshot, Language, LanguageName, Point};
 use project::{ProjectItem as _, WorktreeId};
@@ -62,6 +62,17 @@ pub fn assign_kernelspec(
                 }
             })
             .detach();
+
+            /*
+            cx.subscribe(&editor, EditorEvent::BufferEdited)
+            println!("On buffer change");
+            self.pending_task = None;
+            self.pending_task = Some(cx.spawn(|_, mut cx| async move {
+                cx.background_executor()
+                    .timer(Duration::from_millis(5_000))
+                    .await;
+                println!("No keypress since 500ms.")
+            }));*/
         })
         .ok();
 
@@ -275,7 +286,7 @@ pub fn restart(editor: WeakView<Editor>, cx: &mut WindowContext) {
         cx.notify();
     });
 }
-pub fn eval_expression(editor: WeakView<Editor>, cx: &mut WindowContext) {
+pub fn eval_line(editor: WeakView<Editor>, cx: &mut WindowContext) {
     let store = ReplStore::global(cx);
     let entity_id = editor.entity_id();
     let Some(session) = store.read(cx).get_session(entity_id).cloned() else {
@@ -302,7 +313,7 @@ pub fn eval_expression(editor: WeakView<Editor>, cx: &mut WindowContext) {
 
     session.update(cx, |session, cx| {
         println!("Running eval expression");
-        session.eval_expression(current_line, cx);
+        session.eval_expression(current_line, line_num, cx);
         cx.notify();
     });
 }

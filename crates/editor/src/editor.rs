@@ -658,6 +658,7 @@ pub struct Editor {
     expect_bounds_change: Option<Bounds<Pixels>>,
     tasks: BTreeMap<(BufferId, BufferRow), RunnableTasks>,
     tasks_update_task: Option<Task<()>>,
+    pub pending_task: Option<Task<()>>,
     previous_search_ranges: Option<Arc<[Range<Anchor>]>>,
     breadcrumb_header: Option<String>,
     focused_block: Option<FocusedBlock>,
@@ -1237,6 +1238,7 @@ impl Editor {
             document_highlights_task: Default::default(),
             linked_editing_range_task: Default::default(),
             pending_rename: Default::default(),
+            pending_task: None,
             searchable: true,
             cursor_shape: EditorSettings::get_global(cx)
                 .cursor_shape
@@ -4622,11 +4624,29 @@ impl Editor {
         Some(active_inline_completion.completion)
     }
 
-    pub fn show_expression_value(&mut self, value: &str, cx: &mut ViewContext<Self>) {
-        let selection = self.selections.newest_anchor();
-        let cursor = selection.head();
-        let completion_inlay = Inlay::suggestion(post_inc(&mut self.next_inlay_id), cursor, value);
+    pub fn show_expression_value(
+        &mut self,
+        value: &str,
+        line_number: u32,
+        cx: &mut ViewContext<Self>,
+    ) {
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let line_len = snapshot.line_len(MultiBufferRow(line_number));
+        let position = Point {
+            row: line_number,
+            column: line_len,
+        };
+        let wanted_column = (line_len + 3).max(50);
+        let separation_characters = wanted_column - line_len;
+        let text_with_alignment = " ".repeat(separation_characters as usize) + value;
+        let anchor = snapshot.anchor_after(position);
+        let completion_inlay = Inlay::suggestion(
+            post_inc(&mut self.next_inlay_id),
+            anchor,
+            text_with_alignment,
+        );
 
+        // TODO: remove old inlays.
         self.display_map.update(cx, move |map, cx| {
             map.splice_inlays(Vec::new(), vec![completion_inlay], cx)
         });
@@ -4658,7 +4678,6 @@ impl Editor {
 
         self.take_active_inline_completion(cx);
         let provider = self.inline_completion_provider()?;
-
         let (buffer, cursor_buffer_position) =
             self.buffer.read(cx).text_anchor_for_position(cursor, cx)?;
 
@@ -8650,6 +8669,7 @@ impl Editor {
             self.clear_tasks();
             return Task::ready(());
         }
+        // TODO: move the pending_task here.
         let project = self.project.as_ref().map(Model::downgrade);
         cx.spawn(|this, mut cx| async move {
             cx.background_executor().timer(UPDATE_DEBOUNCE).await;
@@ -11857,6 +11877,16 @@ impl Editor {
 
     fn on_buffer_changed(&mut self, _: Model<MultiBuffer>, cx: &mut ViewContext<Self>) {
         cx.notify();
+        /*
+        println!("On buffer change");
+        self.pending_task = None;
+        self.pending_task = Some(cx.spawn(|_, mut cx| async move {
+            cx.background_executor()
+                .timer(Duration::from_millis(5_000))
+                .await;
+            println!("No keypress since 500ms.")
+        }));
+        */
     }
 
     fn on_buffer_event(

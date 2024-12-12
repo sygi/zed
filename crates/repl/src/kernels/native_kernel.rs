@@ -154,6 +154,7 @@ impl NativeRunningKernel {
                 .context("failed to start the kernel process")?;
 
             let session_id = Uuid::new_v4().to_string();
+            println!("Starting a new session");
 
             let mut iopub_socket =
                 runtimelib::create_client_iopub_connection(&connection_info, "", &session_id)
@@ -178,6 +179,7 @@ impl NativeRunningKernel {
 
                 |mut cx| async move {
                     while let Some(message) = messages_rx.next().await {
+                        println!("Got message in messages_rx: {:#?}", message);
                         session
                             .update(&mut cx, |session, cx| {
                                 session.route(&message, cx);
@@ -220,6 +222,7 @@ impl NativeRunningKernel {
                                 control_request_tx.send(message).await?;
                             }
                             _ => {
+                                println!("Sending shell request tx: {:#?}", message);
                                 shell_request_tx.send(message).await?;
                             }
                         }

@@ -1,6 +1,6 @@
 use crate::components::KernelListItem;
 use crate::kernels::RemoteRunningKernel;
-use crate::setup_editor_session_actions;
+use crate::{eval_expression, setup_editor_session_actions};
 use crate::{
     kernels::{Kernel, KernelSpecification, NativeRunningKernel},
     outputs::{ExecutionStatus, ExecutionView},
@@ -8,6 +8,7 @@ use crate::{
 };
 use client::telemetry::Telemetry;
 use collections::{HashMap, HashSet};
+use editor::EditorEvent;
 use editor::{
     display_map::{
         BlockContext, BlockId, BlockPlacement, BlockProperties, BlockStyle, CustomBlockId,
@@ -23,12 +24,10 @@ use gpui::{
 use language::Point;
 use project::Fs;
 use runtimelib::{
-    ExecuteRequest, ExecutionState, InterruptRequest, JupyterMessage, JupyterMessageContent,
-    ShutdownRequest,
+    ExecuteRequest, ExecutionState, InterruptRequest, JupyterMessage, JupyterMessageContent, Media,
+    MediaType, ShutdownRequest,
 };
-use std::{
-    collections::HashMap as StdHashMap, env::temp_dir, ops::Range, sync::Arc, time::Duration,
-};
+use std::{env::temp_dir, ops::Range, sync::Arc, time::Duration};
 use theme::ActiveTheme;
 use ui::{prelude::*, IconButtonShape, Tooltip};
 use util::ResultExt as _;
@@ -38,10 +37,11 @@ pub struct Session {
     editor: WeakView<Editor>,
     pub kernel: Kernel,
     blocks: HashMap<String, EditorBlock>,
-    eval_requests: HashMap<String, String>,
+    eval_requests: HashMap<String, u32>,
     pub kernel_specification: KernelSpecification,
     telemetry: Arc<Telemetry>,
     _buffer_subscription: Subscription,
+    pending_task: Option<Task<()>>,
 }
 
 struct EditorBlock {
@@ -226,9 +226,12 @@ impl Session {
             kernel_specification,
             _buffer_subscription: subscription,
             telemetry,
+            pending_task: None,
         };
-
         session.start_kernel(cx);
+
+        println!("Subscribing to editor events");
+
         session
     }
 
@@ -511,6 +514,7 @@ impl Session {
                 } else {
                     return;
                 };
+                println!("update data message: {:#?}", update);
 
                 self.blocks.iter_mut().for_each(|(_, block)| {
                     block.execution_view.update(cx, |execution_view, cx| {
@@ -523,7 +527,34 @@ impl Session {
         }
 
         if let Some(block) = self.blocks.get_mut(parent_message_id) {
+            println!("Letting block handle message");
             block.handle_message(message, cx);
+        } else {
+            if let Some(line_number) = self.eval_requests.get(parent_message_id) {
+                let Some(editor) = self.editor.upgrade() else {
+                    return;
+                };
+
+                editor.update(cx, |editor, cx| {
+                    println!("The request was made in line {}", line_number);
+
+                    // TODO: make an option
+                    let output: String = match message.content.clone() {
+                        JupyterMessageContent::ExecuteResult(result) => {
+                            match result.data.content.first() {
+                                Some(MediaType::Plain(s)) => s.clone(),
+                                _ => String::new(),
+                            }
+                        }
+                        _ => String::new(),
+                    };
+                    println!("Response received: {:#?}", output);
+                    if (!output.is_empty()) {
+                        editor.show_expression_value(&output, *line_number, cx);
+                    }
+                    cx.notify();
+                });
+            }
         }
     }
 
@@ -632,36 +663,26 @@ impl Session {
         cx.notify();
     }
 
-    pub fn eval_expression(&mut self, expression: String, cx: &mut ViewContext<Self>) {
-        println!("Evaling {:#?}", expression);
-
-        let Some(editor) = self.editor.upgrade() else {
-            return;
-        };
-
-        editor.update(cx, |editor, cx| {
-            println!("Running eval expression");
-            editor.show_expression_value(&expression, cx);
-            cx.notify();
-        });
-
+    pub fn eval_expression(
+        &mut self,
+        expression: String,
+        line_num: u32,
+        cx: &mut ViewContext<Self>,
+    ) {
         if expression.is_empty() {
             return;
         }
-
-        let mut map: StdHashMap<String, String> = StdHashMap::new();
-        map.insert(String::from("exp"), expression.clone());
+        println!("Evaling {:#?}", expression);
 
         let execute_request = ExecuteRequest {
-            code: "1 + 1".to_string(),
-            //user_expressions: Some(map),
+            code: expression,
             ..ExecuteRequest::default()
         };
         println!("Will send execute Request: {:#?}", execute_request);
         let message: JupyterMessage = execute_request.into();
 
         self.eval_requests
-            .insert(message.header.msg_id.clone(), expression);
+            .insert(message.header.msg_id.clone(), line_num);
         self.send(message, cx).ok();
     }
 }
