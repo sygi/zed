@@ -538,10 +538,15 @@ impl Session {
                     // TODO: make an option
                     let output: String = match message.content.clone() {
                         JupyterMessageContent::ExecuteResult(result) => {
+                            println!("Execute result {:#?}", result);
                             match result.data.content.first() {
                                 Some(MediaType::Plain(s)) => s.clone(),
-                                _ => String::new(),
+                                _ => " ".to_string(),
                             }
+                        }
+                        JupyterMessageContent::ExecuteInput(input) => " ".to_string(), // clear the previous entry.
+                        JupyterMessageContent::ErrorOutput(error) => {
+                            format!("{}: {}", error.ename, error.evalue)
                         }
                         _ => String::new(),
                     };

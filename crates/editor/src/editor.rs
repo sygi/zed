@@ -4640,7 +4640,14 @@ impl Editor {
         };
         let wanted_column = (line_len + 3).max(50);
         let separation_characters = wanted_column - line_len;
-        let text_with_alignment = " ".repeat(separation_characters as usize) + value;
+        let text_with_alignment = value
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                " ".repeat((separation_characters + ((i > 0) as u32) * line_len) as usize) + line
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let anchor = snapshot.anchor_after(position);
         let completion_inlay = Inlay::suggestion(
             post_inc(&mut self.next_inlay_id),
