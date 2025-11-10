@@ -7,6 +7,7 @@ use ::ignore::gitignore::{Gitignore, GitignoreBuilder};
 use anyhow::{Context as _, Result, anyhow};
 use clock::ReplicaId;
 use collections::{HashMap, HashSet, VecDeque};
+use feature_flags::{FeatureFlagAppExt as _, JjUiFeatureFlag};
 use fs::{Fs, MTime, PathEvent, RemoveOptions, Watcher, copy_recursive, read_dir_items};
 use futures::{
     FutureExt as _, Stream, StreamExt,
@@ -25,6 +26,11 @@ use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
 };
 use ignore::IgnoreStack;
+#[cfg(feature = "jj-ui")]
+use jj_support::{
+    JjRepositoryEntry, JjTracker, UpdatedJjRepositoriesSet as BaseUpdatedJjRepositoriesSet,
+    UpdatedJjRepository as BaseUpdatedJjRepository,
+};
 use language::DiskState;
 
 use parking_lot::Mutex;
@@ -71,6 +77,31 @@ use util::{
 pub use worktree_settings::WorktreeSettings;
 
 pub const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
+
+const DOT_JJ: &str = ".jj";
+
+#[cfg(feature = "jj-ui")]
+pub type UpdatedJjRepositoriesSet = BaseUpdatedJjRepositoriesSet<ProjectEntryId>;
+#[cfg(feature = "jj-ui")]
+pub type UpdatedJjRepository = BaseUpdatedJjRepository<ProjectEntryId>;
+#[cfg(feature = "jj-ui")]
+pub type JjRepoEntryForWorktree = JjRepositoryEntry<ProjectEntryId>;
+#[cfg(feature = "jj-ui")]
+type JjTrackerForWorktree = JjTracker<ProjectEntryId>;
+#[cfg(not(feature = "jj-ui"))]
+#[derive(Clone, Debug)]
+pub struct UpdatedJjRepository {
+    pub work_directory_id: ProjectEntryId,
+    pub old_work_directory_abs_path: Option<Arc<Path>>,
+    pub new_work_directory_abs_path: Option<Arc<Path>>,
+    pub jj_dir_abs_path: Option<Arc<Path>>,
+}
+#[cfg(not(feature = "jj-ui"))]
+pub type UpdatedJjRepositoriesSet = Arc<[UpdatedJjRepository]>;
+#[cfg(not(feature = "jj-ui"))]
+type JjRepoEntryForWorktree = ();
+#[cfg(not(feature = "jj-ui"))]
+type JjTrackerForWorktree = ();
 
 /// A set of local or remote files that are being opened as part of a project.
 /// Responsible for tracking related FS (for local)/collab (for remote) events and corresponding updates.
@@ -129,6 +160,7 @@ pub struct LocalWorktree {
     next_entry_id: Arc<AtomicUsize>,
     settings: WorktreeSettings,
     share_private_files: bool,
+    enable_jj_scanning: bool,
 }
 
 pub struct PathPrefixScanRequest {
@@ -236,6 +268,8 @@ pub struct LocalSnapshot {
     /// All of the git repositories in the worktree, indexed by the project entry
     /// id of their parent directory.
     git_repositories: TreeMap<ProjectEntryId, LocalRepositoryEntry>,
+    #[cfg(feature = "jj-ui")]
+    jj_tracker: JjTrackerForWorktree,
     /// The file handle of the worktree root
     /// (so we can find it after it's been moved)
     root_file_handle: Option<Arc<dyn fs::FileHandle>>,
@@ -254,6 +288,7 @@ struct BackgroundScannerState {
     removed_entries: HashMap<u64, Entry>,
     changed_paths: Vec<Arc<RelPath>>,
     prev_snapshot: Snapshot,
+    enable_jj_scanning: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +380,7 @@ struct UpdateObservationState {
 pub enum Event {
     UpdatedEntries(UpdatedEntriesSet),
     UpdatedGitRepositories(UpdatedGitRepositoriesSet),
+    UpdatedJjRepositories(UpdatedJjRepositoriesSet),
     DeletedEntry(ProjectEntryId),
 }
 
@@ -386,10 +422,14 @@ impl Worktree {
         };
 
         cx.new(move |cx: &mut Context<Worktree>| {
+            let enable_jj_scanning = cx.has_flag::<JjUiFeatureFlag>();
+
             let mut snapshot = LocalSnapshot {
                 ignores_by_parent_abs_path: Default::default(),
                 global_gitignore: Default::default(),
                 git_repositories: Default::default(),
+                #[cfg(feature = "jj-ui")]
+                jj_tracker: JjTrackerForWorktree::new(enable_jj_scanning),
                 snapshot: Snapshot::new(
                     cx.entity_id().as_u64(),
                     abs_path
@@ -459,6 +499,7 @@ impl Worktree {
                 fs_case_sensitive,
                 visible,
                 settings,
+                enable_jj_scanning,
             };
             worktree.start_background_scanner(scan_requests_rx, path_prefixes_to_scan_rx, cx);
             Worktree::Local(worktree)
@@ -1047,6 +1088,7 @@ impl LocalWorktree {
     ) {
         let snapshot = self.snapshot();
         let share_private_files = self.share_private_files;
+        let enable_jj_scanning = self.enable_jj_scanning;
         let next_entry_id = self.next_entry_id.clone();
         let fs = self.fs.clone();
         let settings = self.settings.clone();
@@ -1077,11 +1119,13 @@ impl LocalWorktree {
                         paths_to_scan: Default::default(),
                         removed_entries: Default::default(),
                         changed_paths: Default::default(),
+                        enable_jj_scanning,
                     }),
                     phase: BackgroundScannerPhase::InitialScan,
                     share_private_files,
                     settings,
                     watcher,
+                    enable_jj_scanning,
                 };
 
                 scanner
@@ -1126,6 +1170,15 @@ impl LocalWorktree {
         cx: &mut Context<Worktree>,
     ) {
         let repo_changes = self.changed_repos(&self.snapshot, &mut new_snapshot);
+        #[cfg(feature = "jj-ui")]
+        let jj_repo_changes = if self.snapshot.jj_tracker.enabled() {
+            JjTrackerForWorktree::diff(
+                self.snapshot.jj_tracker.repositories(),
+                new_snapshot.jj_tracker.repositories(),
+            )
+        } else {
+            Arc::new([])
+        };
         self.snapshot = new_snapshot;
 
         if let Some(share) = self.update_observer.as_mut() {
@@ -1140,6 +1193,12 @@ impl LocalWorktree {
         }
         if !repo_changes.is_empty() {
             cx.emit(Event::UpdatedGitRepositories(repo_changes));
+        }
+        #[cfg(feature = "jj-ui")]
+        {
+            if self.snapshot.jj_tracker.enabled() && !jj_repo_changes.is_empty() {
+                cx.emit(Event::UpdatedJjRepositories(jj_repo_changes));
+            }
         }
     }
 
@@ -2396,10 +2455,9 @@ impl Snapshot {
 
 impl LocalSnapshot {
     fn local_repo_for_work_directory_path(&self, path: &RelPath) -> Option<&LocalRepositoryEntry> {
-        self.git_repositories
-            .iter()
-            .map(|(_, entry)| entry)
-            .find(|entry| entry.work_directory.path_key() == PathKey(path.into()))
+        self.git_repositories.iter().find_map(|(_, entry)| {
+            (entry.work_directory.path_key() == PathKey(path.into())).then_some(entry)
+        })
     }
 
     fn build_update(
@@ -2645,6 +2703,8 @@ impl BackgroundScannerState {
     fn should_scan_directory(&self, entry: &Entry) -> bool {
         (!entry.is_external && (!entry.is_ignored || entry.is_always_included))
             || entry.path.file_name() == Some(DOT_GIT)
+            || (self.enable_jj_scanning && entry.path.file_name() == Some(DOT_JJ))
+            || entry.path.file_name() == Some(DOT_JJ)
             || entry.path.file_name() == Some(local_settings_folder_name())
             || entry.path.file_name() == Some(local_vscode_folder_name())
             || self.scanned_dirs.contains(&entry.id) // If we've ever scanned it, keep scanning
@@ -2717,6 +2777,11 @@ impl BackgroundScannerState {
         if entry.path.file_name() == Some(&DOT_GIT) {
             self.insert_git_repository(entry.path.clone(), fs, watcher)
                 .await;
+        } else {
+            #[cfg(feature = "jj-ui")]
+            if self.enable_jj_scanning && entry.path.file_name() == Some(DOT_JJ) {
+                self.insert_jj_repository(entry.path.clone()).await;
+            }
         }
 
         #[cfg(test)]
@@ -2842,6 +2907,15 @@ impl BackgroundScannerState {
         self.snapshot
             .git_repositories
             .retain(|id, _| removed_ids.binary_search(id).is_err());
+        #[cfg(feature = "jj-ui")]
+        {
+            if self.snapshot.jj_tracker.enabled() {
+                self.snapshot
+                    .jj_tracker
+                    .repositories_mut()
+                    .retain(|id, _| removed_ids.binary_search(id).is_err());
+            }
+        }
 
         #[cfg(test)]
         self.snapshot.check_invariants(false);
@@ -2890,6 +2964,59 @@ impl BackgroundScannerState {
         )
         .await
         .log_err();
+    }
+
+    #[cfg(feature = "jj-ui")]
+    async fn insert_jj_repository(&mut self, dot_jj_path: Arc<RelPath>) {
+        if !self.enable_jj_scanning {
+            return;
+        }
+
+        let Some(parent_dir) = dot_jj_path.parent() else {
+            log::debug!(
+                "not building jj repository for the worktree itself, `.jj` path in the worktree: {dot_jj_path:?}"
+            );
+            return;
+        };
+
+        if parent_dir.components().any(|component| component == DOT_JJ) {
+            log::debug!(
+                "not building jj repository for nested `.jj` directory, `.jj` path in the worktree: {dot_jj_path:?}"
+            );
+            return;
+        }
+
+        let jj_dir_abs_path = {
+            let abs_path = self.snapshot.absolutize(&dot_jj_path).into_boxed_path();
+            Arc::<Path>::from(abs_path)
+        };
+        let work_directory = WorkDirectory::InProject {
+            relative_path: parent_dir.into(),
+        };
+        let work_dir_entry = match self.snapshot.entry_for_path(&work_directory.path_key().0) {
+            Some(entry) => entry,
+            None => {
+                log::debug!(
+                    "unable to insert jj repository for {:?}; parent directory missing",
+                    dot_jj_path
+                );
+                return;
+            }
+        };
+
+        let work_directory_abs_path = self.snapshot.work_directory_abs_path(&work_directory);
+        let work_directory_rel_path = work_directory.path_key().0;
+
+        let local_repository = JjRepoEntryForWorktree {
+            work_directory_id: work_dir_entry.id,
+            work_directory_abs_path: work_directory_abs_path.as_path().into(),
+            work_directory_rel_path: work_directory_rel_path.clone(),
+            jj_dir_abs_path,
+            jj_dir_scan_id: 0,
+            covers_entire_project: matches!(work_directory, WorkDirectory::AboveProject { .. }),
+        };
+
+        self.snapshot.jj_tracker.insert(local_repository);
     }
 
     async fn insert_git_repository_for_path(
@@ -3570,6 +3697,7 @@ struct BackgroundScanner {
     watcher: Arc<dyn Watcher>,
     settings: WorktreeSettings,
     share_private_files: bool,
+    enable_jj_scanning: bool,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -3843,6 +3971,8 @@ impl BackgroundScanner {
 
         let mut relative_paths = Vec::with_capacity(abs_paths.len());
         let mut dot_git_abs_paths = Vec::new();
+        #[cfg(feature = "jj-ui")]
+        let mut dot_jj_abs_paths = Vec::new();
         abs_paths.sort_unstable();
         abs_paths.dedup_by(|a, b| a.starts_with(b));
         {
@@ -3853,6 +3983,10 @@ impl BackgroundScanner {
 
             {
                 let mut is_git_related = false;
+                #[cfg(feature = "jj-ui")]
+                let mut is_jj_related = false;
+                #[cfg(not(feature = "jj-ui"))]
+                let is_jj_related = false;
 
                 let dot_git_paths = self.executor.block(maybe!(async  {
                     let mut path = None;
@@ -3889,15 +4023,35 @@ impl BackgroundScanner {
                     }
                 }
 
+                #[cfg(feature = "jj-ui")]
+                if self.enable_jj_scanning {
+                    if let Some(dot_jj_abs_path) = abs_path
+                        .as_path()
+                        .ancestors()
+                        .find(|ancestor| ancestor.file_name() == Some(OsStr::new(DOT_JJ)))
+                        .map(|path| path.to_path_buf())
+                    {
+                        is_jj_related = true;
+                        if !dot_jj_abs_paths.contains(&dot_jj_abs_path) {
+                            dot_jj_abs_paths.push(dot_jj_abs_path);
+                        }
+                    }
+                }
+
                 let relative_path = if let Ok(path) =
                     abs_path.strip_prefix(&root_canonical_path)
                     && let Ok(path) = RelPath::new(path, PathStyle::local())
                 {
                     path
                 } else {
-                    if is_git_related {
+                    #[cfg(feature = "jj-ui")]
+                    let jj_related_active = self.enable_jj_scanning && is_jj_related;
+                    #[cfg(not(feature = "jj-ui"))]
+                    let jj_related_active = false;
+
+                    if is_git_related || jj_related_active {
                         log::debug!(
-                            "ignoring event {abs_path:?}, since it's in git dir outside of root path {root_canonical_path:?}",
+                            "ignoring event {abs_path:?}, since it's in vcs dir outside of root path {root_canonical_path:?}",
                         );
                     } else {
                         log::error!(
@@ -3931,11 +4085,18 @@ impl BackgroundScanner {
                     return false;
                 }
 
+                #[cfg(feature = "jj-ui")]
+                let jj_related_active = self.enable_jj_scanning && is_jj_related;
+                #[cfg(not(feature = "jj-ui"))]
+                let jj_related_active = false;
+
                 if self.settings.is_path_excluded(&relative_path) {
-                    if !is_git_related {
+                    if !is_git_related && !jj_related_active {
                         log::debug!("ignoring FS event for excluded path {relative_path:?}");
                     }
-                    return false;
+                    if !is_git_related && !jj_related_active {
+                        return false;
+                    }
                 }
 
                 relative_paths.push(relative_path.into_arc());
@@ -3965,6 +4126,10 @@ impl BackgroundScanner {
         } else {
             Vec::new()
         };
+        #[cfg(feature = "jj-ui")]
+        if self.enable_jj_scanning && !dot_jj_abs_paths.is_empty() {
+            self.update_jj_repositories(dot_jj_abs_paths).await;
+        }
 
         {
             let mut ignores_to_update = self.ignores_needing_update().await;
@@ -4181,9 +4346,12 @@ impl BackgroundScanner {
             .collect::<Vec<_>>()
             .await;
 
-        // Ensure that .git and .gitignore are processed first.
+        // Ensure that .git/.jj and .gitignore are processed first.
         swap_to_front(&mut child_paths, GITIGNORE);
         swap_to_front(&mut child_paths, DOT_GIT);
+        if self.enable_jj_scanning {
+            swap_to_front(&mut child_paths, DOT_JJ);
+        }
 
         if let Some(path) = child_paths.first()
             && path.ends_with(DOT_GIT)
@@ -4210,6 +4378,11 @@ impl BackgroundScanner {
                         self.watcher.as_ref(),
                     )
                     .await;
+            } else if child_name == OsStr::new(DOT_JJ) {
+                #[cfg(feature = "jj-ui")]
+                let mut state = self.state.lock().await;
+                #[cfg(feature = "jj-ui")]
+                state.insert_jj_repository(child_path.clone()).await;
             } else if child_name == GITIGNORE {
                 match build_gitignore(&child_abs_path, self.fs.as_ref()).await {
                     Ok(ignore) => {
@@ -4455,7 +4628,8 @@ impl BackgroundScanner {
                     if let (Some(scan_queue_tx), true) = (&scan_queue_tx, is_dir) {
                         if state.should_scan_directory(&fs_entry)
                             || (fs_entry.path.is_empty()
-                                && abs_path.file_name() == Some(OsStr::new(DOT_GIT)))
+                                && (abs_path.file_name() == Some(OsStr::new(DOT_GIT))
+                                    || abs_path.file_name() == Some(OsStr::new(DOT_JJ))))
                         {
                             state
                                 .enqueue_scan_dir(
@@ -4510,13 +4684,27 @@ impl BackgroundScanner {
     }
 
     fn remove_repo_path(&self, path: Arc<RelPath>, snapshot: &mut LocalSnapshot) -> Option<()> {
-        if !path.components().any(|component| component == DOT_GIT)
-            && let Some(local_repo) = snapshot.local_repo_for_work_directory_path(&path)
-        {
-            let id = local_repo.work_directory_id;
-            log::debug!("remove repo path: {:?}", path);
-            snapshot.git_repositories.remove(&id);
-            return Some(());
+        if !path.components().any(|component| component == DOT_GIT) {
+            if let Some(local_repo) = snapshot.local_repo_for_work_directory_path(&path) {
+                let id = local_repo.work_directory_id;
+                log::debug!("remove repo path: {:?}", path);
+                snapshot.git_repositories.remove(&id);
+                return Some(());
+            }
+            #[cfg(feature = "jj-ui")]
+            {
+                if snapshot.jj_tracker.enabled() {
+                    if let Some(id) = snapshot
+                        .jj_tracker
+                        .repo_for_relative_path(&path)
+                        .map(|(id, _)| *id)
+                    {
+                        log::debug!("remove jj repo path: {:?}", path);
+                        snapshot.jj_tracker.repositories_mut().remove(&id);
+                        return Some(());
+                    }
+                }
+            }
         }
 
         Some(())
@@ -4813,6 +5001,74 @@ impl BackgroundScanner {
         affected_repo_roots
     }
 
+    #[cfg(feature = "jj-ui")]
+    async fn update_jj_repositories(&self, dot_jj_paths: Vec<PathBuf>) {
+        if !self.enable_jj_scanning || dot_jj_paths.is_empty() {
+            return;
+        }
+
+        let mut state = self.state.lock().await;
+        if !state.snapshot.jj_tracker.enabled() {
+            return;
+        }
+        let scan_id = state.snapshot.scan_id;
+
+        for dot_jj_dir in dot_jj_paths {
+            let dot_jj_dir = Arc::<Path>::from(dot_jj_dir.into_boxed_path());
+            if let Some(repo_id) = state
+                .snapshot
+                .jj_tracker
+                .repo_id_by_jj_dir(dot_jj_dir.as_ref())
+            {
+                state.snapshot.jj_tracker.mark_scan(&repo_id, scan_id);
+            } else {
+                let Ok(relative) = dot_jj_dir.strip_prefix(state.snapshot.abs_path()) else {
+                    debug_panic!(
+                        "update_jj_repositories called with .jj directory outside the worktree root"
+                    );
+                    continue;
+                };
+                state
+                    .insert_jj_repository(
+                        RelPath::new(relative, PathStyle::local())
+                            .unwrap()
+                            .into_arc(),
+                    )
+                    .await;
+            }
+        }
+
+        // Remove jj repositories whose metadata directory vanished.
+        let mut ids_to_preserve = HashSet::default();
+        for (work_directory_id, entry) in state.snapshot.jj_tracker.repositories().iter() {
+            let exists_in_snapshot =
+                state
+                    .snapshot
+                    .entry_for_id(*work_directory_id)
+                    .is_some_and(|entry| {
+                        state
+                            .snapshot
+                            .entry_for_path(&entry.path.join(RelPath::unix(DOT_JJ).unwrap()))
+                            .is_some()
+                    });
+
+            if exists_in_snapshot
+                || matches!(
+                    self.fs.metadata(entry.jj_dir_abs_path.as_ref()).await,
+                    Ok(Some(_))
+                )
+            {
+                ids_to_preserve.insert(*work_directory_id);
+            }
+        }
+
+        state
+            .snapshot
+            .jj_tracker
+            .repositories_mut()
+            .retain(|work_directory_id, _| ids_to_preserve.contains(work_directory_id));
+    }
+
     async fn progress_timer(&self, running: bool) {
         if !running {
             return futures::future::pending().await;
@@ -5021,6 +5277,40 @@ fn char_bag_for_path(root_char_bag: CharBag, path: &RelPath) -> CharBag {
     let mut result = root_char_bag;
     result.extend(path.as_unix_str().chars().map(|c| c.to_ascii_lowercase()));
     result
+}
+
+impl Worktree {
+    #[cfg(feature = "jj-ui")]
+    pub fn jj_repository_entries(&self) -> Option<Vec<JjRepoEntryForWorktree>> {
+        match self {
+            Worktree::Local(local) if local.snapshot.jj_tracker.enabled() => Some(
+                local
+                    .snapshot
+                    .jj_tracker
+                    .repositories()
+                    .values()
+                    .cloned()
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "jj-ui")]
+    pub fn jj_repository_entry(
+        &self,
+        work_directory_id: ProjectEntryId,
+    ) -> Option<JjRepoEntryForWorktree> {
+        match self {
+            Worktree::Local(local) if local.snapshot.jj_tracker.enabled() => local
+                .snapshot
+                .jj_tracker
+                .repositories()
+                .get(&work_directory_id)
+                .cloned(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -31,8 +31,8 @@ use util::{
     rel_path::RelPath,
 };
 use worktree::{
-    CreatedEntry, Entry, ProjectEntryId, UpdatedEntriesSet, UpdatedGitRepositoriesSet, Worktree,
-    WorktreeId, WorktreeSettings,
+    CreatedEntry, Entry, ProjectEntryId, UpdatedEntriesSet, UpdatedGitRepositoriesSet,
+    UpdatedJjRepositoriesSet, Worktree, WorktreeId, WorktreeSettings,
 };
 
 use crate::{ProjectPath, search::SearchQuery};
@@ -75,6 +75,7 @@ pub enum WorktreeStoreEvent {
     WorktreeUpdateSent(Entity<Worktree>),
     WorktreeUpdatedEntries(WorktreeId, UpdatedEntriesSet),
     WorktreeUpdatedGitRepositories(WorktreeId, UpdatedGitRepositoriesSet),
+    WorktreeUpdatedJjRepositories(WorktreeId, UpdatedJjRepositoriesSet),
     WorktreeDeletedEntry(WorktreeId, ProjectEntryId),
 }
 
@@ -643,6 +644,12 @@ impl WorktreeStore {
                 }
                 worktree::Event::UpdatedGitRepositories(set) => {
                     cx.emit(WorktreeStoreEvent::WorktreeUpdatedGitRepositories(
+                        worktree_id,
+                        set.clone(),
+                    ));
+                }
+                worktree::Event::UpdatedJjRepositories(set) => {
+                    cx.emit(WorktreeStoreEvent::WorktreeUpdatedJjRepositories(
                         worktree_id,
                         set.clone(),
                     ));

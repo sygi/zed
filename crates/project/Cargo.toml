@@ -25,6 +25,7 @@ test-support = [
     "dap/test-support",
     "dap_adapters/test-support",
 ]
+jj-ui = ["worktree/jj-ui", "jj"]
 
 [dependencies]
 aho-corasick.workspace = true
@@ -52,6 +53,7 @@ http_client.workspace = true
 image.workspace = true
 itertools.workspace = true
 indexmap.workspace = true
+jj = { workspace = true, optional = true }
 language.workspace = true
 log.workspace = true
 lsp.workspace = true

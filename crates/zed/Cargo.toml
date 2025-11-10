@@ -18,6 +18,12 @@ path = "src/zed-main.rs"
 name = "zed"
 path = "src/main.rs"
 
+[features]
+default = []
+jj-ui = [
+    "project/jj-ui",
+]
+
 [dependencies]
 acp_tools.workspace = true
 activity_indicator.workspace = true

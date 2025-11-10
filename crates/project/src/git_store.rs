@@ -1178,6 +1178,7 @@ impl GitStore {
                 );
                 self.local_worktree_git_repos_changed(worktree, changed_repos, cx);
             }
+            WorktreeStoreEvent::WorktreeUpdatedJjRepositories(_, _) => {}
             _ => {}
         }
     }

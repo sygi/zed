@@ -7,6 +7,9 @@ pub mod debounced_delay;
 pub mod debugger;
 pub mod git_store;
 pub mod image_store;
+#[cfg(feature = "jj-ui")]
+#[cfg(feature = "jj-ui")]
+mod jj_store;
 pub mod lsp_command;
 pub mod lsp_store;
 mod manifest_tree;
@@ -18,6 +21,7 @@ pub mod task_store;
 pub mod telemetry_snapshot;
 pub mod terminals;
 pub mod toolchain_store;
+mod vcs;
 pub mod worktree_store;
 
 #[cfg(test)]
@@ -37,6 +41,7 @@ use dap::inline_value::{InlineValueLocation, VariableLookupKind, VariableScope};
 use crate::{
     git_store::GitStore,
     lsp_store::{SymbolLocation, log_store::LogKind},
+    vcs::{ProjectVcsBackend, VcsBackend},
 };
 pub use agent_server_store::{AgentServerStore, AgentServersUpdated, ExternalAgentServerName};
 pub use git_store::{
@@ -192,6 +197,9 @@ pub struct Project {
     remote_client: Option<Entity<RemoteClient>>,
     client_state: ProjectClientState,
     git_store: Entity<GitStore>,
+    #[cfg(feature = "jj-ui")]
+    _jj_store: Option<Entity<jj_store::JjStore>>,
+    vcs_backend: Arc<dyn VcsBackend>,
     collaborators: HashMap<proto::PeerId, Collaborator>,
     client_subscriptions: Vec<client::Subscription>,
     worktree_store: Entity<WorktreeStore>,
@@ -1164,6 +1172,16 @@ impl Project {
                     cx,
                 )
             });
+            #[cfg(feature = "jj-ui")]
+            let jj_store = cx.new(|cx| jj_store::JjStore::new(worktree_store.clone(), cx));
+            #[cfg(feature = "jj-ui")]
+            let vcs_backend: Arc<dyn VcsBackend> = Arc::new(ProjectVcsBackend::new(
+                git_store.clone(),
+                Some(jj_store.clone()),
+            ));
+            #[cfg(not(feature = "jj-ui"))]
+            let vcs_backend: Arc<dyn VcsBackend> =
+                Arc::new(ProjectVcsBackend::new(git_store.clone()));
 
             let agent_server_store = cx.new(|cx| {
                 AgentServerStore::local(
@@ -1188,6 +1206,9 @@ impl Project {
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
                 git_store,
+                #[cfg(feature = "jj-ui")]
+                _jj_store: Some(jj_store),
+                vcs_backend,
                 client_subscriptions: Vec::new(),
                 _subscriptions: vec![cx.on_release(Self::release)],
                 active_entry: None,
@@ -1348,6 +1369,12 @@ impl Project {
                     cx,
                 )
             });
+            #[cfg(feature = "jj-ui")]
+            let vcs_backend: Arc<dyn VcsBackend> =
+                Arc::new(ProjectVcsBackend::new(git_store.clone(), None));
+            #[cfg(not(feature = "jj-ui"))]
+            let vcs_backend: Arc<dyn VcsBackend> =
+                Arc::new(ProjectVcsBackend::new(git_store.clone()));
 
             let agent_server_store =
                 cx.new(|_| AgentServerStore::remote(REMOTE_SERVER_PROJECT_ID, remote.clone()));
@@ -1367,6 +1394,9 @@ impl Project {
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
                 git_store,
+                #[cfg(feature = "jj-ui")]
+                _jj_store: None,
+                vcs_backend,
                 agent_server_store,
                 client_subscriptions: Vec::new(),
                 _subscriptions: vec![
@@ -1584,6 +1614,11 @@ impl Project {
                 cx,
             )
         })?;
+        #[cfg(feature = "jj-ui")]
+        let vcs_backend: Arc<dyn VcsBackend> =
+            Arc::new(ProjectVcsBackend::new(git_store.clone(), None));
+        #[cfg(not(feature = "jj-ui"))]
+        let vcs_backend: Arc<dyn VcsBackend> = Arc::new(ProjectVcsBackend::new(git_store.clone()));
 
         let agent_server_store = cx.new(|cx| AgentServerStore::collab(cx))?;
         let replica_id = ReplicaId::new(response.payload.replica_id as u16);
@@ -1652,6 +1687,9 @@ impl Project {
                 breakpoint_store,
                 dap_store: dap_store.clone(),
                 git_store: git_store.clone(),
+                #[cfg(feature = "jj-ui")]
+                _jj_store: None,
+                vcs_backend: vcs_backend.clone(),
                 agent_server_store,
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
@@ -2731,8 +2769,7 @@ impl Project {
         if self.is_disconnected(cx) {
             return Task::ready(Err(anyhow!(ErrorCode::Disconnected)));
         }
-        self.git_store
-            .update(cx, |git_store, cx| git_store.open_unstaged_diff(buffer, cx))
+        self.vcs_backend.open_unstaged_diff(buffer, cx)
     }
 
     pub fn open_uncommitted_diff(
@@ -2743,9 +2780,7 @@ impl Project {
         if self.is_disconnected(cx) {
             return Task::ready(Err(anyhow!(ErrorCode::Disconnected)));
         }
-        self.git_store.update(cx, |git_store, cx| {
-            git_store.open_uncommitted_diff(buffer, cx)
-        })
+        self.vcs_backend.open_uncommitted_diff(buffer, cx)
     }
 
     pub fn open_buffer_by_id(
@@ -3246,6 +3281,7 @@ impl Project {
             }
             // Listen to the GitStore instead.
             WorktreeStoreEvent::WorktreeUpdatedGitRepositories(_, _) => {}
+            WorktreeStoreEvent::WorktreeUpdatedJjRepositories(_, _) => {}
         }
     }
 
@@ -4618,9 +4654,7 @@ impl Project {
         version: Option<clock::Global>,
         cx: &mut App,
     ) -> Task<Result<Option<Blame>>> {
-        self.git_store.update(cx, |git_store, cx| {
-            git_store.blame_buffer(buffer, version, cx)
-        })
+        self.vcs_backend.blame_buffer(buffer, version, cx)
     }
 
     pub fn get_permalink_to_line(
@@ -4629,9 +4663,8 @@ impl Project {
         selection: Range<u32>,
         cx: &mut App,
     ) -> Task<Result<url::Url>> {
-        self.git_store.update(cx, |git_store, cx| {
-            git_store.get_permalink_to_line(buffer, selection, cx)
-        })
+        self.vcs_backend
+            .get_permalink_to_line(buffer, selection, cx)
     }
 
     // RPC message handlers
@@ -5321,15 +5354,18 @@ impl Project {
     }
 
     pub fn active_repository(&self, cx: &App) -> Option<Entity<Repository>> {
-        self.git_store.read(cx).active_repository()
+        self.vcs_backend.active_repository(cx)
     }
 
-    pub fn repositories<'a>(&self, cx: &'a App) -> &'a HashMap<RepositoryId, Entity<Repository>> {
-        self.git_store.read(cx).repositories()
+    pub fn repositories<'a>(
+        &'a self,
+        cx: &'a App,
+    ) -> &'a HashMap<RepositoryId, Entity<Repository>> {
+        self.vcs_backend.repositories(cx)
     }
 
     pub fn status_for_buffer_id(&self, buffer_id: BufferId, cx: &App) -> Option<FileStatus> {
-        self.git_store.read(cx).status_for_buffer_id(buffer_id, cx)
+        self.vcs_backend.status_for_buffer_id(buffer_id, cx)
     }
 
     pub fn set_agent_location(
