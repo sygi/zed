@@ -7,6 +7,7 @@ use jj_lib::repo::{Repo as _, RepoLoader, StoreFactories};
 use jj_lib::repo_path::RepoPath;
 use jj_lib::settings::UserSettings;
 use jj_lib::workspace::{self, DefaultWorkspaceLoaderFactory, WorkspaceLoaderFactory};
+use log::{debug, warn};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
@@ -44,10 +45,29 @@ impl JjWorkspace {
     }
 
     pub async fn parent_tree_text(&self, path: &RepoPath) -> Result<Option<String>> {
+        debug!(
+            target: "jj::workspace",
+            "parent_tree_text requested: workspace={} path={}",
+            self.workspace_name.as_str(),
+            path.as_internal_file_string()
+        );
         let repo = self.repo_loader.load_at_head()?;
         let Some(wc_commit_id) = repo.view().get_wc_commit_id(&self.workspace_name) else {
+            warn!(
+                target: "jj::workspace",
+                "missing working copy commit: workspace={} path={}",
+                self.workspace_name.as_str(),
+                path.as_internal_file_string()
+            );
             return Ok(None);
         };
+        debug!(
+            target: "jj::workspace",
+            "materializing parent tree: workspace={} path={} commit={:?}",
+            self.workspace_name.as_str(),
+            path.as_internal_file_string(),
+            wc_commit_id
+        );
         let wc_commit = repo.store().get_commit(wc_commit_id)?;
         let parent_tree = wc_commit.parent_tree(repo.as_ref())?;
         let merged_value = parent_tree.path_value(path)?;
@@ -60,7 +80,15 @@ impl JjWorkspace {
             _ => None,
         };
 
-        Ok(bytes.and_then(|data| String::from_utf8(data).ok()))
+        let text = bytes.and_then(|data| String::from_utf8(data).ok());
+        debug!(
+            target: "jj::workspace",
+            "parent_tree_text resolved: workspace={} path={} bytes={}",
+            self.workspace_name.as_str(),
+            path.as_internal_file_string(),
+            text.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
+        Ok(text)
     }
 
     pub fn recent_commits(&self, limit: usize) -> Result<Vec<CommitSummary>> {

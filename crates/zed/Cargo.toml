@@ -22,7 +22,7 @@ path = "src/main.rs"
 default = []
 jj-ui = [
     "project/jj-ui",
-    "jj_ui",
+    "dep:jj_ui",
 ]
 
 [dependencies]
@@ -80,7 +80,6 @@ gpui = { workspace = true, features = [
     "windows-manifest",
 ] }
 gpui_tokio.workspace = true
-jj_ui = { workspace = true, optional = true }
 rayon.workspace = true
 
 edit_prediction_button.workspace = true
@@ -118,6 +117,7 @@ paths.workspace = true
 picker.workspace = true
 profiling.workspace = true
 project.workspace = true
+jj_ui = { workspace = true, optional = true }
 project_panel.workspace = true
 project_symbols.workspace = true
 prompt_store.workspace = true

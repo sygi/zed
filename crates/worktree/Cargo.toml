@@ -21,7 +21,7 @@ test-support = [
     "text/test-support",
     "util/test-support",
 ]
-jj-ui = ["jj_support"]
+jj-ui = ["dep:jj"]
 
 [dependencies]
 anyhow.workspace = true
@@ -34,7 +34,7 @@ fuzzy.workspace = true
 git.workspace = true
 gpui.workspace = true
 ignore.workspace = true
-jj_support = { workspace = true, optional = true }
+jj = { workspace = true, optional = true }
 language.workspace = true
 log.workspace = true
 feature_flags.workspace = true

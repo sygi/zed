@@ -9372,6 +9372,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "jj-lib",
+ "log",
+ "util",
 ]
 
 [[package]]
@@ -9433,20 +9435,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "jj_support"
-version = "0.1.0"
-dependencies = [
- "util",
-]
-
-[[package]]
 name = "jj_ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "feature_flags",
  "gpui",
- "jj",
  "project",
  "time",
  "ui",
@@ -21842,7 +21836,7 @@ dependencies = [
  "gpui",
  "http_client",
  "ignore",
- "jj_support",
+ "jj",
  "language",
  "log",
  "parking_lot",

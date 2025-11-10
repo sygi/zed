@@ -10,3 +10,5 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 jj-lib.workspace = true
+log.workspace = true
+util.workspace = true

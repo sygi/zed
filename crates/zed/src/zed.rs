@@ -35,7 +35,7 @@ use gpui::{
 };
 use image_viewer::ImageInfo;
 #[cfg(feature = "jj-ui")]
-use jj_ui;
+use jj_ui::JjPanel;
 use language::Capability;
 use language_onboarding::BasedPyrightBanner;
 use language_tools::lsp_button::{self, LspButton};
@@ -612,7 +612,7 @@ fn initialize_panels(
         )?;
 
         #[cfg(feature = "jj-ui")]
-        let jj_panel = match jj_ui::JjPanel::load(workspace_handle.clone(), cx.clone()).await {
+        let jj_panel = match JjPanel::load(workspace_handle.clone(), cx.clone()).await {
             Ok(panel) => Some(panel),
             Err(error) => {
                 log::warn!("failed to load JJ panel: {error:?}");

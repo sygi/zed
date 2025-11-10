@@ -6,6 +6,7 @@ use gpui::SharedString;
 use gpui::{AppContext as _, Context, Entity, Subscription, Task};
 use jj::{CommitSummary, JjWorkspace, RepoPathBuf};
 use language::{Buffer, LocalFile};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::{collections::HashMap, path::Path, sync::Arc};
 use worktree::{JjRepoEntryForWorktree, ProjectEntryId, Worktree, WorktreeId};
@@ -50,8 +51,27 @@ impl JjStore {
         let (repository, repo_path) = self.repository_and_path_for_buffer(&buffer, cx)?;
         let workspace = match repository.workspace() {
             Ok(workspace) => workspace,
-            Err(err) => return Some(Task::ready(Err(err))),
+            Err(err) => {
+                warn!(
+                    target: "jj::diff",
+                    "failed to load jj workspace for {}: {err:?}",
+                    repository
+                        .work_directory_path()
+                        .display()
+                        .to_string()
+                );
+                return Some(Task::ready(Err(err)));
+            }
         };
+        let repo_root = repository.work_directory_path();
+        let repo_root_display = repo_root.display().to_string();
+        let repo_path_string = repo_path.as_internal_file_string().to_owned();
+        info!(
+            target: "jj::diff",
+            "open_unstaged_diff requested: repo_root={} path={}",
+            repo_root_display,
+            repo_path_string
+        );
 
         let (language, language_registry, text_snapshot) = {
             let buffer_guard = buffer.read(cx);
@@ -64,8 +84,37 @@ impl JjStore {
 
         let diff = cx.new(|cx| BufferDiff::new(&text_snapshot, cx));
         let repo_path = repo_path.clone();
+        let repo_root_display_for_task = repo_root_display.clone();
+        let repo_path_string_for_task = repo_path_string.clone();
         let task = cx.spawn(async move |_, cx| {
-            let base_text = workspace.parent_tree_text(repo_path.as_ref()).await?;
+            debug!(
+                target: "jj::diff",
+                "materializing parent tree text: repo_root={} path={}",
+                repo_root_display_for_task,
+                repo_path_string_for_task
+            );
+            let base_text = match workspace.parent_tree_text(repo_path.as_ref()).await {
+                Ok(text) => {
+                    info!(
+                        target: "jj::diff",
+                        "parent tree ready: repo_root={} path={} bytes={}",
+                        repo_root_display_for_task,
+                        repo_path_string_for_task,
+                        text.as_ref().map(|t| t.len()).unwrap_or(0)
+                    );
+                    text
+                }
+                Err(err) => {
+                    warn!(
+                        target: "jj::diff",
+                        "failed to materialize parent tree text: repo_root={} path={} err={:?}",
+                        repo_root_display_for_task,
+                        repo_path_string_for_task,
+                        err
+                    );
+                    return Err(err);
+                }
+            };
             let base_text = base_text.map(Arc::new);
             let rx = diff.update(cx, |diff, cx| {
                 diff.set_base_text(
@@ -261,5 +310,9 @@ impl JjRepositoryState {
             .strip_prefix(self.work_directory_abs_path.as_ref())
             .ok()?;
         RepoPathBuf::from_relative_path(relative).ok()
+    }
+
+    fn work_directory_path(&self) -> Arc<Path> {
+        self.work_directory_abs_path.clone()
     }
 }

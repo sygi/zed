@@ -27,7 +27,7 @@ use gpui::{
 };
 use ignore::IgnoreStack;
 #[cfg(feature = "jj-ui")]
-use jj_support::{
+use jj::{
     JjRepositoryEntry, JjTracker, UpdatedJjRepositoriesSet as BaseUpdatedJjRepositoriesSet,
     UpdatedJjRepository as BaseUpdatedJjRepository,
 };

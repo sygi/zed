@@ -2,8 +2,8 @@
 
 ## Changes Introduced
 
-### 1. Scoped JJ Repository Tracking (`crates/jj_support`, `crates/worktree/src/worktree.rs`)
-- **What**: Added a dedicated `jj_support` crate that owns `JjTracker`, `JjRepositoryEntry`, and the `UpdatedJjRepository` payloads. The worktree scanner now imports this tracker behind the `jj-ui` feature flag, so `.jj` metadata is monitored only when the flag is enabled.
+### 1. Scoped JJ Repository Tracking (`crates/jj/src/tracker.rs`, `crates/worktree/src/worktree.rs`)
+- **What**: Added a dedicated tracker module inside the `jj` crate that owns `JjTracker`, `JjRepositoryEntry`, and the `UpdatedJjRepository` payloads. The worktree scanner now imports this tracker behind the `jj-ui` feature flag, so `.jj` metadata is monitored only when the flag is enabled.
 - **Why**: Keeps jj-specific logic isolated from the generic worktree pipeline and makes it easy to plug in future backends without sprinkling jj structs across unrelated modules. Moving tracking into its own crate also lets us evolve jj integration independently of Git.
 
 ### 2. Feature-flagged JJ Scanning (`crates/feature_flags/src/flags.rs`, `crates/worktree/src/worktree.rs`)
@@ -14,8 +14,8 @@
 - **What**: Introduced a `VcsBackend` trait plus a `GitVcsBackend` implementation that wraps the existing `GitStore`. `Project` now holds an `Arc<dyn VcsBackend>` and delegates diff/permalink/blame/status queries through the trait.
 - **Why**: This creates the seam needed for future backends (jj or others) without disturbing existing Git code. Behavior is identical today because the only backend is Git, but the project layer is no longer hardwired to Git types.
 
-### 4. JJ Panel Prototype (`crates/jj_ui`, `crates/zed/src/zed.rs`)
-- **What**: Added a feature-gated `jj_ui` crate that registers a `JjPanel` dock. The panel fetches the latest JJ commits on demand via `JjStore`/`jj-lib` and renders a simple history list with a refresh button.
+### 4. JJ Panel Prototype (`crates/jj_ui/src/lib.rs`, `crates/zed/src/zed.rs`)
+- **What**: Added a feature-gated JJ panel module in the `jj_ui` crate that registers a `JjPanel` dock. The panel fetches the latest JJ commits on demand via `JjStore`/`jj-lib` and renders a simple history list with a refresh button.
 - **Why**: Gives us a visible surface for JJ work without touching the Git UI. Pulling the change graph on open keeps the initial implementation simple while we iterate on backend caching.
 
 ## Exposed VCS Operations
@@ -35,9 +35,9 @@ Write-side operations (stage, unstage, commit, branch, push/pull, init, etc.) st
 
 ## Next Steps (not yet implemented)
 1. Expand `VcsBackend` with capability reporting so UI can hide Git-specific chrome when a backend doesn’t support indexes/remotes.
-2. Add a `JjVcsBackend` that consumes the data from `jj_support` and implements at least the shared read APIs by calling `jj file diff` / `jj annotate` (or future jj RPCs).
+2. Add a `JjVcsBackend` that consumes the data from the new tracker helpers and implements at least the shared read APIs by calling `jj file diff` / `jj annotate` (or future jj RPCs).
 3. Route write operations (stage/commit/etc.) through the facade where they make semantic sense, falling back to Git-only wiring otherwise.
 
 
-TODO: remove the 1-2 part, import jj-lib always like before but hide it behind a flag, get a facade for a simple feature and implement it for jj. Then implement a jj panel instead of a git one
-merge everything into a single crate
+TODO: remove the 1-2 part, import jj-lib always like before but hide it behind a flag, get a facade for a simple feature and implement it for jj. Then implement a jj panel instead of a git one.
+Keep JJ core helpers in `crates/jj` and UI pieces in `crates/jj_ui` while wiring them through the generic VCS facade.
