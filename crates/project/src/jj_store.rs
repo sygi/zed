@@ -1,8 +1,10 @@
 use crate::worktree_store::{WorktreeStore, WorktreeStoreEvent};
 use anyhow::Result;
 use buffer_diff::BufferDiff;
+#[cfg(feature = "jj-ui")]
+use gpui::SharedString;
 use gpui::{AppContext as _, Context, Entity, Subscription, Task};
-use jj::{JjWorkspace, RepoPathBuf};
+use jj::{CommitSummary, JjWorkspace, RepoPathBuf};
 use language::{Buffer, LocalFile};
 use parking_lot::Mutex;
 use std::{collections::HashMap, path::Path, sync::Arc};
@@ -13,6 +15,16 @@ pub struct JjStore {
     repositories_by_worktree: HashMap<WorktreeId, Vec<Arc<JjRepositoryState>>>,
     repositories_by_id: HashMap<ProjectEntryId, Arc<JjRepositoryState>>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[cfg(feature = "jj-ui")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JjCommitSummary {
+    pub commit_id: SharedString,
+    pub change_id: SharedString,
+    pub description: SharedString,
+    pub author: SharedString,
+    pub timestamp: i64,
 }
 
 impl JjStore {
@@ -178,6 +190,38 @@ impl JjStore {
             for repo in repos {
                 self.repositories_by_id.remove(&repo.work_directory_id);
             }
+        }
+    }
+
+    #[cfg(feature = "jj-ui")]
+    pub fn has_repositories(&self) -> bool {
+        !self.repositories_by_id.is_empty()
+    }
+
+    #[cfg(feature = "jj-ui")]
+    pub fn recent_commits(
+        &mut self,
+        limit: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<Vec<JjCommitSummary>>>> {
+        let repo = self.repositories_by_id.values().next()?.clone();
+        let task = cx.background_spawn(async move {
+            let workspace = repo.workspace()?;
+            let commits = workspace.recent_commits(limit)?;
+            Ok(commits.into_iter().map(JjCommitSummary::from).collect())
+        });
+        Some(task)
+    }
+}
+#[cfg(feature = "jj-ui")]
+impl From<CommitSummary> for JjCommitSummary {
+    fn from(summary: CommitSummary) -> Self {
+        Self {
+            commit_id: SharedString::from(summary.commit_id.to_string()),
+            change_id: SharedString::from(summary.change_id.to_string()),
+            description: SharedString::from(summary.description),
+            author: SharedString::from(summary.author),
+            timestamp: summary.timestamp,
         }
     }
 }

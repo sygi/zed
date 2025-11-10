@@ -34,6 +34,8 @@ use gpui::{
     px, retain_all,
 };
 use image_viewer::ImageInfo;
+#[cfg(feature = "jj-ui")]
+use jj_ui;
 use language::Capability;
 use language_onboarding::BasedPyrightBanner;
 use language_tools::lsp_button::{self, LspButton};
@@ -609,6 +611,15 @@ fn initialize_panels(
             debug_panel,
         )?;
 
+        #[cfg(feature = "jj-ui")]
+        let jj_panel = match jj_ui::JjPanel::load(workspace_handle.clone(), cx.clone()).await {
+            Ok(panel) => Some(panel),
+            Err(error) => {
+                log::warn!("failed to load JJ panel: {error:?}");
+                None
+            }
+        };
+
         workspace_handle.update_in(cx, |workspace, window, cx| {
             workspace.add_panel(project_panel, window, cx);
             workspace.add_panel(outline_panel, window, cx);
@@ -617,6 +628,10 @@ fn initialize_panels(
             workspace.add_panel(channels_panel, window, cx);
             workspace.add_panel(notification_panel, window, cx);
             workspace.add_panel(debug_panel, window, cx);
+            #[cfg(feature = "jj-ui")]
+            if let Some(panel) = jj_panel {
+                workspace.add_panel(panel, window, cx);
+            }
         })?;
 
         fn setup_or_teardown_agent_panel(
@@ -4806,6 +4821,8 @@ mod tests {
             editor::init(cx);
             collab_ui::init(&app_state, cx);
             git_ui::init(cx);
+            #[cfg(feature = "jj-ui")]
+            jj_ui::init(cx);
             project_panel::init(cx);
             outline_panel::init(cx);
             terminal_view::init(cx);

@@ -14,6 +14,10 @@
 - **What**: Introduced a `VcsBackend` trait plus a `GitVcsBackend` implementation that wraps the existing `GitStore`. `Project` now holds an `Arc<dyn VcsBackend>` and delegates diff/permalink/blame/status queries through the trait.
 - **Why**: This creates the seam needed for future backends (jj or others) without disturbing existing Git code. Behavior is identical today because the only backend is Git, but the project layer is no longer hardwired to Git types.
 
+### 4. JJ Panel Prototype (`crates/jj_ui`, `crates/zed/src/zed.rs`)
+- **What**: Added a feature-gated `jj_ui` crate that registers a `JjPanel` dock. The panel fetches the latest JJ commits on demand via `JjStore`/`jj-lib` and renders a simple history list with a refresh button.
+- **Why**: Gives us a visible surface for JJ work without touching the Git UI. Pulling the change graph on open keeps the initial implementation simple while we iterate on backend caching.
+
 ## Exposed VCS Operations
 
 The current abstraction covers the “read” surface area needed by the editor: 
@@ -36,3 +40,4 @@ Write-side operations (stage, unstage, commit, branch, push/pull, init, etc.) st
 
 
 TODO: remove the 1-2 part, import jj-lib always like before but hide it behind a flag, get a facade for a simple feature and implement it for jj. Then implement a jj panel instead of a git one
+merge everything into a single crate

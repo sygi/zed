@@ -33,6 +33,8 @@ use context_server_store::ContextServerStore;
 pub use environment::ProjectEnvironmentEvent;
 use git::repository::get_git_committer;
 use git_store::{Repository, RepositoryId};
+#[cfg(feature = "jj-ui")]
+pub use jj_store::JjCommitSummary;
 pub mod search_history;
 mod yarn;
 
@@ -5366,6 +5368,11 @@ impl Project {
 
     pub fn status_for_buffer_id(&self, buffer_id: BufferId, cx: &App) -> Option<FileStatus> {
         self.vcs_backend.status_for_buffer_id(buffer_id, cx)
+    }
+
+    #[cfg(feature = "jj-ui")]
+    pub fn jj_store(&self) -> Option<&Entity<jj_store::JjStore>> {
+        self._jj_store.as_ref()
     }
 
     pub fn set_agent_location(

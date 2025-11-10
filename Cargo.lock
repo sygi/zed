@@ -9440,6 +9440,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "jj_ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "feature_flags",
+ "gpui",
+ "jj",
+ "project",
+ "time",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22251,6 +22265,7 @@ dependencies = [
  "inspector_ui",
  "install_cli",
  "itertools 0.14.0",
+ "jj_ui",
  "journal",
  "json_schema_store",
  "keymap_editor",

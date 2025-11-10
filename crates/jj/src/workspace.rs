@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use jj_lib::backend::{ChangeId, CommitId};
 use jj_lib::config::StackedConfig;
 use jj_lib::conflicts::{MaterializedTreeValue, materialize_tree_value};
 use jj_lib::ref_name::WorkspaceNameBuf;
@@ -6,12 +7,22 @@ use jj_lib::repo::{Repo as _, RepoLoader, StoreFactories};
 use jj_lib::repo_path::RepoPath;
 use jj_lib::settings::UserSettings;
 use jj_lib::workspace::{self, DefaultWorkspaceLoaderFactory, WorkspaceLoaderFactory};
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 /// Thin wrapper around `jj_lib`'s workspace APIs for UI consumers.
 pub struct JjWorkspace {
     repo_loader: RepoLoader,
     workspace_name: WorkspaceNameBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitSummary {
+    pub commit_id: CommitId,
+    pub change_id: ChangeId,
+    pub author: String,
+    pub description: String,
+    pub timestamp: i64,
 }
 
 impl JjWorkspace {
@@ -50,5 +61,46 @@ impl JjWorkspace {
         };
 
         Ok(bytes.and_then(|data| String::from_utf8(data).ok()))
+    }
+
+    pub fn recent_commits(&self, limit: usize) -> Result<Vec<CommitSummary>> {
+        let repo = self.repo_loader.load_at_head()?;
+        let store = repo.store();
+        let mut pending = VecDeque::new();
+        for head in repo.view().heads() {
+            let commit = store.get_commit(head)?;
+            pending.push_back(commit);
+        }
+
+        let mut visited = HashSet::new();
+        let mut summaries = Vec::new();
+
+        while let Some(commit) = pending.pop_front() {
+            if !visited.insert(commit.id().clone()) {
+                continue;
+            }
+
+            let timestamp = commit.committer().timestamp.timestamp;
+            summaries.push(CommitSummary {
+                commit_id: commit.id().clone(),
+                change_id: commit.change_id().clone(),
+                author: commit.author().name.clone(),
+                description: commit.description().to_string(),
+                timestamp: timestamp.0,
+            });
+
+            if summaries.len() >= limit {
+                break;
+            }
+
+            for parent_id in commit.parent_ids() {
+                let parent = store.get_commit(parent_id)?;
+                pending.push_back(parent);
+            }
+        }
+
+        summaries.sort_by_key(|summary| summary.timestamp);
+        summaries.reverse();
+        Ok(summaries)
     }
 }
