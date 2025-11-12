@@ -3,18 +3,20 @@ use anyhow::Result;
 use buffer_diff::BufferDiff;
 #[cfg(feature = "jj-ui")]
 use gpui::SharedString;
-use gpui::{AppContext as _, Context, Entity, Subscription, Task};
+use gpui::{AppContext as _, AsyncApp, Context, Entity, Subscription, Task, WeakEntity};
 use jj::{CommitSummary, JjWorkspace, RepoPathBuf};
 use language::{Buffer, LocalFile};
 use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::{collections::HashMap, path::Path, sync::Arc};
+use text::BufferId;
 use worktree::{JjRepoEntryForWorktree, ProjectEntryId, Worktree, WorktreeId};
 
 pub struct JjStore {
     worktree_store: Entity<WorktreeStore>,
     repositories_by_worktree: HashMap<WorktreeId, Vec<Arc<JjRepositoryState>>>,
     repositories_by_id: HashMap<ProjectEntryId, Arc<JjRepositoryState>>,
+    diffs_by_buffer: HashMap<BufferId, JjDiffState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -28,12 +30,21 @@ pub struct JjCommitSummary {
     pub timestamp: i64,
 }
 
+#[cfg(feature = "jj-ui")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JjRepositorySummary {
+    pub id: ProjectEntryId,
+    pub worktree_id: WorktreeId,
+    pub path: SharedString,
+}
+
 impl JjStore {
     pub fn new(worktree_store: Entity<WorktreeStore>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             worktree_store: worktree_store.clone(),
             repositories_by_worktree: HashMap::new(),
             repositories_by_id: HashMap::new(),
+            diffs_by_buffer: HashMap::new(),
             _subscriptions: Vec::new(),
         };
 
@@ -73,9 +84,10 @@ impl JjStore {
             repo_path_string
         );
 
-        let (language, language_registry, text_snapshot) = {
+        let (buffer_id, language, language_registry, text_snapshot) = {
             let buffer_guard = buffer.read(cx);
             (
+                buffer_guard.remote_id(),
                 buffer_guard.language().cloned(),
                 buffer_guard.language_registry(),
                 buffer_guard.text_snapshot(),
@@ -83,9 +95,11 @@ impl JjStore {
         };
 
         let diff = cx.new(|cx| BufferDiff::new(&text_snapshot, cx));
-        let repo_path = repo_path.clone();
+        let repo_path_for_task = repo_path.clone();
         let repo_root_display_for_task = repo_root_display.clone();
         let repo_path_string_for_task = repo_path_string.clone();
+        let store = cx.entity().downgrade();
+        let repository_for_task = repository.clone();
         let task = cx.spawn(async move |_, cx| {
             debug!(
                 target: "jj::diff",
@@ -93,7 +107,10 @@ impl JjStore {
                 repo_root_display_for_task,
                 repo_path_string_for_task
             );
-            let base_text = match workspace.parent_tree_text(repo_path.as_ref()).await {
+            let base_text = match workspace
+                .parent_tree_text(repo_path_for_task.as_ref())
+                .await
+            {
                 Ok(text) => {
                     info!(
                         target: "jj::diff",
@@ -126,10 +143,65 @@ impl JjStore {
                 )
             })?;
             rx.await?;
+            if let Some(store) = store.upgrade() {
+                store
+                    .update(cx, |store, _| {
+                        store.track_diff(
+                            buffer_id,
+                            diff.downgrade(),
+                            repository_for_task.clone(),
+                            repo_path_for_task.clone(),
+                        );
+                    })
+                    .ok();
+            }
             Ok(diff)
         });
 
         Some(task)
+    }
+
+    pub fn open_uncommitted_diff(
+        &mut self,
+        buffer: Entity<Buffer>,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<Entity<BufferDiff>>>> {
+        self.open_unstaged_diff(buffer, cx)
+    }
+
+    pub fn recalculate_buffer_diffs(
+        &mut self,
+        buffers: Vec<Entity<Buffer>>,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<()>> {
+        let mut jobs = Vec::new();
+        for buffer in buffers {
+            let (buffer_id, state) = {
+                let buffer_id = buffer.read(cx).remote_id();
+                let state = self.diffs_by_buffer.get(&buffer_id).cloned();
+                (buffer_id, state)
+            };
+            if let Some(state) = state {
+                jobs.push((buffer, buffer_id, state));
+            }
+        }
+        if jobs.is_empty() {
+            return None;
+        }
+        let store = cx.entity().downgrade();
+        Some(cx.spawn(async move |_, cx| {
+            for (buffer, buffer_id, state) in jobs {
+                if let Err(err) =
+                    Self::recalculate_diff_for_job(&store, buffer.clone(), buffer_id, state, cx)
+                        .await
+                {
+                    warn!(
+                        target: "jj::diff",
+                        "failed to recalc diff for buffer {buffer_id:?}: {err:?}"
+                    );
+                }
+            }
+        }))
     }
 
     fn repository_and_path_for_buffer(
@@ -234,6 +306,76 @@ impl JjStore {
         }
     }
 
+    fn track_diff(
+        &mut self,
+        buffer_id: BufferId,
+        diff: WeakEntity<BufferDiff>,
+        repository: Arc<JjRepositoryState>,
+        repo_path: RepoPathBuf,
+    ) {
+        self.diffs_by_buffer.insert(
+            buffer_id,
+            JjDiffState {
+                diff,
+                repository,
+                repo_path,
+            },
+        );
+    }
+
+    async fn recalculate_diff_for_job(
+        store: &WeakEntity<Self>,
+        buffer: Entity<Buffer>,
+        buffer_id: BufferId,
+        state: JjDiffState,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        let Some(diff_entity) = state.diff.upgrade() else {
+            if let Some(store) = store.upgrade() {
+                store
+                    .update(cx, |store, _| {
+                        store.diffs_by_buffer.remove(&buffer_id);
+                    })
+                    .ok();
+            }
+            return Ok(());
+        };
+
+        let workspace = state.repository.workspace()?;
+        let repo_path = state.repo_path.clone();
+        let repo_root = state.repository.work_directory_path();
+        let repo_root_display = repo_root.display().to_string();
+        let path_string = repo_path.as_internal_file_string().to_owned();
+        debug!(
+            target: "jj::diff",
+            "recalculating diff base: repo_root={} path={}",
+            repo_root_display,
+            path_string
+        );
+
+        let base_text = workspace.parent_tree_text(repo_path.as_ref()).await?;
+        let base_text = base_text.map(Arc::new);
+        let (language, language_registry, text_snapshot) = buffer.read_with(cx, |buffer, _| {
+            (
+                buffer.language().cloned(),
+                buffer.language_registry(),
+                buffer.text_snapshot(),
+            )
+        })?;
+
+        let rx = diff_entity.update(cx, |diff, cx| {
+            diff.set_base_text(
+                base_text.clone(),
+                language.clone(),
+                language_registry.clone(),
+                text_snapshot.clone(),
+                cx,
+            )
+        })?;
+        rx.await?;
+        Ok(())
+    }
+
     fn remove_worktree(&mut self, worktree_id: WorktreeId) {
         if let Some(repos) = self.repositories_by_worktree.remove(&worktree_id) {
             for repo in repos {
@@ -248,12 +390,28 @@ impl JjStore {
     }
 
     #[cfg(feature = "jj-ui")]
+    pub fn repositories(&self) -> Vec<JjRepositorySummary> {
+        self.repositories_by_id
+            .values()
+            .map(|repo| JjRepositorySummary {
+                id: repo.work_directory_id,
+                worktree_id: repo.worktree_id,
+                path: SharedString::from(repo.display_name()),
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "jj-ui")]
     pub fn recent_commits(
         &mut self,
+        repository_id: Option<ProjectEntryId>,
         limit: usize,
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<Vec<JjCommitSummary>>>> {
-        let repo = self.repositories_by_id.values().next()?.clone();
+        let repo = match repository_id {
+            Some(id) => self.repositories_by_id.get(&id)?.clone(),
+            None => self.repositories_by_id.values().next()?.clone(),
+        };
         let task = cx.background_spawn(async move {
             let workspace = repo.workspace()?;
             let commits = workspace.recent_commits(limit)?;
@@ -273,6 +431,13 @@ impl From<CommitSummary> for JjCommitSummary {
             timestamp: summary.timestamp,
         }
     }
+}
+
+#[derive(Clone)]
+struct JjDiffState {
+    diff: WeakEntity<BufferDiff>,
+    repository: Arc<JjRepositoryState>,
+    repo_path: RepoPathBuf,
 }
 
 struct JjRepositoryState {
@@ -314,5 +479,10 @@ impl JjRepositoryState {
 
     fn work_directory_path(&self) -> Arc<Path> {
         self.work_directory_abs_path.clone()
+    }
+
+    #[cfg(feature = "jj-ui")]
+    fn display_name(&self) -> String {
+        self.work_directory_abs_path.display().to_string()
     }
 }

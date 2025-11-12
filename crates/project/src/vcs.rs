@@ -5,6 +5,8 @@ use crate::jj_store::JjStore;
 use anyhow::Result;
 use buffer_diff::BufferDiff;
 use collections::HashMap;
+#[cfg(feature = "jj-ui")]
+use feature_flags::{FeatureFlagAppExt as _, JjUiFeatureFlag};
 use git::blame::Blame;
 use git::status::FileStatus;
 use gpui::{App, Context, Entity, Task};
@@ -45,6 +47,12 @@ pub trait VcsBackend: Send + Sync + 'static {
     fn repositories<'a>(&'a self, cx: &'a App) -> &'a HashMap<RepositoryId, Entity<Repository>>;
 
     fn status_for_buffer_id(&self, buffer_id: BufferId, cx: &App) -> Option<FileStatus>;
+
+    fn recalculate_buffer_diffs(
+        &self,
+        buffers: Vec<Entity<Buffer>>,
+        cx: &mut Context<Project>,
+    ) -> Task<()>;
 }
 
 pub struct ProjectVcsBackend {
@@ -78,7 +86,8 @@ impl VcsBackend for ProjectVcsBackend {
     ) -> Task<Result<Entity<BufferDiff>>> {
         #[cfg(feature = "jj-ui")]
         {
-            if let Some(jj) = &self.jj {
+            if let Some(jj) = self.preferred_jj_backend(cx) {
+                // TODO: allow users to configure the preferred VCS priority once settings exist.
                 if let Some(task) = jj.open_unstaged_diff(buffer.clone(), cx) {
                     return task;
                 }
@@ -92,6 +101,14 @@ impl VcsBackend for ProjectVcsBackend {
         buffer: Entity<Buffer>,
         cx: &mut Context<Project>,
     ) -> Task<Result<Entity<BufferDiff>>> {
+        #[cfg(feature = "jj-ui")]
+        {
+            if let Some(jj) = self.preferred_jj_backend(cx) {
+                if let Some(task) = jj.open_uncommitted_diff(buffer.clone(), cx) {
+                    return task;
+                }
+            }
+        }
         self.git.open_uncommitted_diff(buffer, cx)
     }
 
@@ -124,6 +141,20 @@ impl VcsBackend for ProjectVcsBackend {
     fn status_for_buffer_id(&self, buffer_id: BufferId, cx: &App) -> Option<FileStatus> {
         self.git.status_for_buffer_id(buffer_id, cx)
     }
+
+    fn recalculate_buffer_diffs(
+        &self,
+        buffers: Vec<Entity<Buffer>>,
+        cx: &mut Context<Project>,
+    ) -> Task<()> {
+        #[cfg(feature = "jj-ui")]
+        {
+            if let Some(jj) = self.preferred_jj_backend(cx) {
+                return jj.recalculate_buffer_diffs(buffers, cx);
+            }
+        }
+        self.git.recalculate_buffer_diffs(buffers, cx)
+    }
 }
 
 pub struct GitVcsBackend {
@@ -154,6 +185,48 @@ impl JjVcsBackend {
     ) -> Option<Task<Result<Entity<BufferDiff>>>> {
         self.jj_store
             .update(cx, |store, cx| store.open_unstaged_diff(buffer.clone(), cx))
+    }
+
+    fn open_uncommitted_diff(
+        &self,
+        buffer: Entity<Buffer>,
+        cx: &mut Context<Project>,
+    ) -> Option<Task<Result<Entity<BufferDiff>>>> {
+        self.jj_store.update(cx, |store, cx| {
+            store.open_uncommitted_diff(buffer.clone(), cx)
+        })
+    }
+
+    fn has_repositories(&self, cx: &mut Context<Project>) -> bool {
+        self.jj_store.read(cx).has_repositories()
+    }
+
+    fn recalculate_buffer_diffs(
+        &self,
+        buffers: Vec<Entity<Buffer>>,
+        cx: &mut Context<Project>,
+    ) -> Task<()> {
+        match self
+            .jj_store
+            .update(cx, |store, cx| store.recalculate_buffer_diffs(buffers, cx))
+        {
+            Some(task) => task,
+            None => Task::ready(()),
+        }
+    }
+}
+
+#[cfg(feature = "jj-ui")]
+impl ProjectVcsBackend {
+    fn preferred_jj_backend<'a>(&'a self, cx: &mut Context<Project>) -> Option<&'a JjVcsBackend> {
+        let jj = self.jj.as_ref()?;
+        if !cx.has_flag::<JjUiFeatureFlag>() {
+            return None;
+        }
+        if !jj.has_repositories(cx) {
+            return None;
+        }
+        Some(jj)
     }
 }
 
@@ -209,5 +282,18 @@ impl VcsBackend for GitVcsBackend {
 
     fn status_for_buffer_id(&self, buffer_id: BufferId, cx: &App) -> Option<FileStatus> {
         self.git_store.read(cx).status_for_buffer_id(buffer_id, cx)
+    }
+
+    fn recalculate_buffer_diffs(
+        &self,
+        buffers: Vec<Entity<Buffer>>,
+        cx: &mut Context<Project>,
+    ) -> Task<()> {
+        let future = self.git_store.update(cx, |git_store, cx| {
+            git_store.recalculate_buffer_diffs(buffers, cx)
+        });
+        cx.background_executor().spawn(async move {
+            future.await;
+        })
     }
 }

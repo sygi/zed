@@ -34,7 +34,7 @@ pub use environment::ProjectEnvironmentEvent;
 use git::repository::get_git_committer;
 use git_store::{Repository, RepositoryId};
 #[cfg(feature = "jj-ui")]
-pub use jj_store::JjCommitSummary;
+pub use jj_store::{JjCommitSummary, JjRepositorySummary};
 pub mod search_history;
 mod yarn;
 
@@ -3419,9 +3419,7 @@ impl Project {
                         if buffers.is_empty() {
                             None
                         } else {
-                            Some(this.git_store.update(cx, |git_store, cx| {
-                                git_store.recalculate_buffer_diffs(buffers, cx)
-                            }))
+                            Some(this.vcs_backend.recalculate_buffer_diffs(buffers, cx))
                         }
                     })
                     .ok()
