@@ -11,7 +11,7 @@ use jj_lib::transaction::Transaction;
 use jj_lib::working_copy::CheckoutOptions;
 use jj_lib::workspace::{self, DefaultWorkspaceLoaderFactory, WorkspaceLoaderFactory};
 use log::{debug, warn};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -210,16 +210,18 @@ impl JjWorkspace {
     pub fn recent_commits(&self, limit: usize) -> Result<Vec<CommitSummary>> {
         let repo = self.repo_loader.load_at_head()?;
         let store = repo.store();
-        let mut pending = VecDeque::new();
-        for head in repo.view().heads() {
-            let commit = store.get_commit(head)?;
-            pending.push_back(commit);
+        let mut heads: Vec<_> = repo.view().heads().iter().cloned().collect();
+        heads.sort();
+        let mut stack = Vec::new();
+        for head in heads {
+            let commit = store.get_commit(&head)?;
+            stack.push(commit);
         }
 
         let mut visited = HashSet::new();
         let mut summaries = Vec::new();
 
-        while let Some(commit) = pending.pop_front() {
+        while let Some(commit) = stack.pop() {
             if !visited.insert(commit.id().clone()) {
                 continue;
             }
@@ -237,14 +239,14 @@ impl JjWorkspace {
                 break;
             }
 
-            for parent_id in commit.parent_ids() {
-                let parent = store.get_commit(parent_id)?;
-                pending.push_back(parent);
+            let mut parents: Vec<_> = commit.parent_ids().iter().cloned().collect();
+            parents.reverse();
+            for parent_id in parents {
+                let parent = store.get_commit(&parent_id)?;
+                stack.push(parent);
             }
         }
 
-        summaries.sort_by_key(|summary| summary.timestamp);
-        summaries.reverse();
         Ok(summaries)
     }
 }

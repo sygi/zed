@@ -4,7 +4,7 @@ use buffer_diff::BufferDiff;
 #[cfg(feature = "jj-ui")]
 use gpui::SharedString;
 use gpui::{AppContext as _, AsyncApp, Context, Entity, Subscription, Task, WeakEntity};
-use jj::{ChangeId, CommitId, CommitSummary, JjWorkspace, RepoPathBuf, short_change_hash};
+use jj::{ChangeId, CommitId, JjWorkspace, RepoPathBuf, short_change_hash};
 use language::{Buffer, LocalFile};
 use log::{debug, info, warn};
 use parking_lot::Mutex;

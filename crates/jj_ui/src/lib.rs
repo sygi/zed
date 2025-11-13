@@ -10,6 +10,7 @@ use gpui::{
 use jj::{short_change_hash, short_commit_hash};
 use log::{info, warn};
 use project::{JjCommitSummary, JjRepositorySummary, Project, ProjectEntryId};
+use std::time::Duration;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use ui::{
     AnyElement, ButtonStyle, ContextMenu, Modal, ModalFooter, ModalHeader, Section, prelude::*,
