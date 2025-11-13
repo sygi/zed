@@ -5,12 +5,11 @@ use feature_flags::{FeatureFlagAppExt as _, JjUiFeatureFlag};
 use gpui::{
     Action, App, AsyncWindowContext, ClickEvent, Context, Corner, DismissEvent, Entity,
     EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString,
-    Subscription, Task, WeakEntity, Window, actions, px, rems,
+    Subscription, Task, WeakEntity, Window, actions, anchored, deferred, px, rems,
 };
 use jj::{short_change_hash, short_commit_hash};
 use log::{info, warn};
 use project::{JjCommitSummary, JjRepositorySummary, Project, ProjectEntryId};
-use std::time::Duration;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use ui::{
     AnyElement, ButtonStyle, ContextMenu, Modal, ModalFooter, ModalHeader, Section, prelude::*,
@@ -268,7 +267,7 @@ impl JjPanel {
         let change_id = commit.change_id.clone();
         if let Some(task) = store.update(cx, |store, cx| store.edit_change(repo_id, change_id, cx))
         {
-            self.spawn_store_task("jj edit", task, window, cx);
+            self.spawn_store_task("jj edit", task, true, window, cx);
         }
     }
 
@@ -337,21 +336,32 @@ impl JjPanel {
         &self,
         label: &'static str,
         task: Task<Result<()>>,
+        refresh_on_success: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let panel = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, cx| match task.await {
-            Ok(_) => info!(target: "jj_ui", "{label} completed"),
+            Ok(_) => {
+                info!(target: "jj_ui", "{label} completed");
+                if refresh_on_success {
+                    if let Some(panel) = panel.upgrade() {
+                        let panel_clone = panel.clone();
+                        let _ = cx.update(|window, cx| {
+                            panel_clone.update(cx, |panel, cx| {
+                                panel.request_refresh(window, cx);
+                            })
+                        });
+                    }
+                }
+            }
             Err(err) => {
                 warn!(target: "jj_ui", "{label} failed: {err:?}");
                 if let Some(panel) = panel.upgrade() {
-                    panel
-                        .update(cx, |panel, cx| {
-                            panel.error = Some(format!("{err}").into());
-                            cx.notify();
-                        })
-                        .ok();
+                    let _ = panel.update(cx, |panel, cx| {
+                        panel.error = Some(format!("{err}").into());
+                        cx.notify();
+                    });
                 }
             }
         })
@@ -553,7 +563,7 @@ impl Panel for JjPanel {
 }
 
 impl Render for JjPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = h_flex()
             .justify_between()
             .items_center()
