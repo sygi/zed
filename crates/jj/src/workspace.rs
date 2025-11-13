@@ -1,20 +1,25 @@
 use anyhow::{Result, anyhow};
 use jj_lib::backend::{ChangeId, CommitId};
+use jj_lib::commit::Commit;
 use jj_lib::config::StackedConfig;
-use jj_lib::conflicts::{MaterializedTreeValue, materialize_tree_value};
+use jj_lib::conflicts::{ConflictMarkerStyle, MaterializedTreeValue, materialize_tree_value};
 use jj_lib::ref_name::WorkspaceNameBuf;
-use jj_lib::repo::{Repo as _, RepoLoader, StoreFactories};
+use jj_lib::repo::{ReadonlyRepo, Repo as _, RepoLoader, StoreFactories};
 use jj_lib::repo_path::RepoPath;
 use jj_lib::settings::UserSettings;
+use jj_lib::transaction::Transaction;
+use jj_lib::working_copy::CheckoutOptions;
 use jj_lib::workspace::{self, DefaultWorkspaceLoaderFactory, WorkspaceLoaderFactory};
 use log::{debug, warn};
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Thin wrapper around `jj_lib`'s workspace APIs for UI consumers.
 pub struct JjWorkspace {
     repo_loader: RepoLoader,
     workspace_name: WorkspaceNameBuf,
+    workspace_root: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -41,7 +46,109 @@ impl JjWorkspace {
         Ok(Self {
             repo_loader: workspace.repo_loader().clone(),
             workspace_name: workspace.workspace_name().to_owned(),
+            workspace_root: workspace.workspace_root().to_path_buf(),
         })
+    }
+
+    fn load_workspace(&self) -> Result<workspace::Workspace> {
+        let loader = DefaultWorkspaceLoaderFactory.create(&self.workspace_root)?;
+        let config = StackedConfig::with_defaults();
+        let settings = UserSettings::from_config(config)?;
+        Ok(loader.load(
+            &settings,
+            &StoreFactories::default(),
+            &workspace::default_working_copy_factories(),
+        )?)
+    }
+
+    fn load_workspace_and_repo(&self) -> Result<(workspace::Workspace, Arc<ReadonlyRepo>)> {
+        let workspace = self.load_workspace()?;
+        let repo = workspace.repo_loader().load_at_head()?;
+        Ok((workspace, repo))
+    }
+
+    fn resolve_change_commit(repo: &Arc<ReadonlyRepo>, change_id: &ChangeId) -> Result<Commit> {
+        let Some(commit_ids) = repo.resolve_change_id(change_id) else {
+            return Err(anyhow!("change {} not found", short_change_hash(change_id)));
+        };
+        let commit_id = commit_ids.first().ok_or_else(|| {
+            anyhow!(
+                "change {} has no associated commits",
+                short_change_hash(change_id)
+            )
+        })?;
+        Ok(repo.store().get_commit(commit_id)?)
+    }
+
+    fn apply_transaction(
+        &self,
+        workspace: &mut workspace::Workspace,
+        mut tx: Transaction,
+        description: impl Into<String>,
+    ) -> Result<()> {
+        tx.repo_mut().rebase_descendants()?;
+        let old_repo = tx.base_repo().clone();
+        let new_repo = tx.commit(description)?;
+
+        let workspace_name = workspace.workspace_name().to_owned();
+        let old_wc_commit = old_repo
+            .view()
+            .get_wc_commit_id(&workspace_name)
+            .map(|id| old_repo.store().get_commit(id))
+            .transpose()?;
+
+        let new_wc_commit_id = new_repo
+            .view()
+            .get_wc_commit_id(&workspace_name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "workspace '{}' missing working copy commit",
+                    workspace_name.as_str()
+                )
+            })?;
+        let new_wc_commit = new_repo.store().get_commit(new_wc_commit_id)?;
+
+        let old_tree = old_wc_commit
+            .as_ref()
+            .map(|commit| commit.tree_id().clone());
+        workspace.check_out(
+            new_repo.op_id().clone(),
+            old_tree.as_ref(),
+            &new_wc_commit,
+            &CheckoutOptions {
+                conflict_marker_style: ConflictMarkerStyle::default(),
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn edit_change(&self, change_id: &ChangeId) -> Result<()> {
+        let (mut workspace, repo) = self.load_workspace_and_repo()?;
+        let commit = Self::resolve_change_commit(&repo, change_id)?;
+        let mut tx = repo.start_transaction();
+        tx.repo_mut()
+            .edit(workspace.workspace_name().to_owned(), &commit)?;
+        self.apply_transaction(
+            &mut workspace,
+            tx,
+            format!("edit change {}", short_change_hash(change_id)),
+        )
+    }
+
+    pub fn rename_change(&self, change_id: &ChangeId, new_description: &str) -> Result<()> {
+        let (mut workspace, repo) = self.load_workspace_and_repo()?;
+        let commit = Self::resolve_change_commit(&repo, change_id)?;
+        let mut tx = repo.start_transaction();
+        {
+            let builder = tx.repo_mut().rewrite_commit(&commit);
+            let builder = builder.set_description(new_description.to_string());
+            builder.write()?;
+        }
+        self.apply_transaction(
+            &mut workspace,
+            tx,
+            format!("rename change {}", short_change_hash(change_id)),
+        )
     }
 
     pub async fn parent_tree_text(&self, path: &RepoPath) -> Result<Option<String>> {
@@ -131,4 +238,12 @@ impl JjWorkspace {
         summaries.reverse();
         Ok(summaries)
     }
+}
+
+pub fn short_change_hash(change_id: &ChangeId) -> String {
+    format!("{change_id:.12}")
+}
+
+pub fn short_commit_hash(commit_id: &CommitId) -> String {
+    format!("{commit_id:.12}")
 }

@@ -4,7 +4,7 @@ use buffer_diff::BufferDiff;
 #[cfg(feature = "jj-ui")]
 use gpui::SharedString;
 use gpui::{AppContext as _, AsyncApp, Context, Entity, Subscription, Task, WeakEntity};
-use jj::{CommitSummary, JjWorkspace, RepoPathBuf};
+use jj::{ChangeId, CommitId, CommitSummary, JjWorkspace, RepoPathBuf, short_change_hash};
 use language::{Buffer, LocalFile};
 use log::{debug, info, warn};
 use parking_lot::Mutex;
@@ -23,8 +23,8 @@ pub struct JjStore {
 #[cfg(feature = "jj-ui")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JjCommitSummary {
-    pub commit_id: SharedString,
-    pub change_id: SharedString,
+    pub commit_id: CommitId,
+    pub change_id: ChangeId,
     pub description: SharedString,
     pub author: SharedString,
     pub timestamp: i64,
@@ -419,13 +419,56 @@ impl JjStore {
         });
         Some(task)
     }
+
+    #[cfg(feature = "jj-ui")]
+    pub fn edit_change(
+        &mut self,
+        repository_id: ProjectEntryId,
+        change_id: ChangeId,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<()>>> {
+        let repository = self.repositories_by_id.get(&repository_id)?.clone();
+        Some(cx.spawn(async move |_, _| {
+            repository.workspace()?.edit_change(&change_id)?;
+            info!(
+                target: "project::jj_store",
+                "switched workspace {:?} to change {}",
+                repository_id,
+                short_change_hash(&change_id)
+            );
+            Ok(())
+        }))
+    }
+
+    #[cfg(feature = "jj-ui")]
+    pub fn rename_change(
+        &mut self,
+        repository_id: ProjectEntryId,
+        change_id: ChangeId,
+        new_description: String,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<()>>> {
+        let repository = self.repositories_by_id.get(&repository_id)?.clone();
+        Some(cx.spawn(async move |_, _| {
+            repository
+                .workspace()?
+                .rename_change(&change_id, &new_description)?;
+            info!(
+                target: "project::jj_store",
+                "renamed change {} in repo {:?}",
+                short_change_hash(&change_id),
+                repository_id
+            );
+            Ok(())
+        }))
+    }
 }
 #[cfg(feature = "jj-ui")]
 impl From<CommitSummary> for JjCommitSummary {
     fn from(summary: CommitSummary) -> Self {
         Self {
-            commit_id: SharedString::from(summary.commit_id.to_string()),
-            change_id: SharedString::from(summary.change_id.to_string()),
+            commit_id: summary.commit_id,
+            change_id: summary.change_id,
             description: SharedString::from(summary.description),
             author: SharedString::from(summary.author),
             timestamp: summary.timestamp,
