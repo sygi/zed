@@ -28,6 +28,7 @@ pub struct JjCommitSummary {
     pub description: SharedString,
     pub author: SharedString,
     pub timestamp: i64,
+    pub is_current: bool,
 }
 
 #[cfg(feature = "jj-ui")]
@@ -421,7 +422,7 @@ impl JjStore {
                 .map(|summary| {
                     let is_current = current_change
                         .as_ref()
-                        .is_some_and(|id| id == summary.change_id());
+                        .is_some_and(|id| id == &summary.change_id);
                     JjCommitSummary {
                         commit_id: summary.commit_id,
                         change_id: summary.change_id,
