@@ -141,6 +141,8 @@ pub struct MultiBufferDiffHunk {
     pub diff_base_byte_range: Range<usize>,
     /// Whether or not this hunk also appears in the 'secondary diff'.
     pub secondary_status: DiffHunkSecondaryStatus,
+    /// How this hunk should be reviewed (stageable vs. restore-only).
+    pub review_mode: buffer_diff::DiffReviewMode,
 }
 
 impl MultiBufferDiffHunk {
@@ -3148,17 +3150,18 @@ impl MultiBufferSnapshot {
             let diff = self.diffs.get(&buffer.remote_id())?;
             let buffer_start = buffer.anchor_before(buffer_range.start);
             let buffer_end = buffer.anchor_after(buffer_range.end);
+            let review_mode = diff.review_mode();
             Some(
                 diff.hunks_intersecting_range(buffer_start..buffer_end, buffer)
-                    .filter_map(|hunk| {
+                    .filter_map(move |hunk| {
                         if hunk.is_created_file() && !self.all_diff_hunks_expanded {
                             return None;
                         }
-                        Some((hunk.range.clone(), hunk))
+                        Some((hunk.range.clone(), (hunk, review_mode)))
                     }),
             )
         })
-        .filter_map(move |(range, hunk, excerpt)| {
+        .filter_map(move |(range, (hunk, review_mode), excerpt)| {
             if range.start != range.end && range.end == query_range.start && !hunk.range.is_empty()
             {
                 return None;
@@ -3175,6 +3178,7 @@ impl MultiBufferSnapshot {
                 buffer_range: hunk.buffer_range.clone(),
                 diff_base_byte_range: hunk.diff_base_byte_range.clone(),
                 secondary_status: hunk.secondary_status,
+                review_mode,
             })
         })
     }

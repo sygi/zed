@@ -1,6 +1,6 @@
 use crate::worktree_store::{WorktreeStore, WorktreeStoreEvent};
 use anyhow::Result;
-use buffer_diff::BufferDiff;
+use buffer_diff::{BufferDiff, DiffReviewMode};
 #[cfg(feature = "jj-ui")]
 use gpui::SharedString;
 use gpui::{AppContext as _, AsyncApp, Context, Entity, Subscription, Task, WeakEntity};
@@ -144,6 +144,9 @@ impl JjStore {
                 )
             })?;
             rx.await?;
+            diff.update(cx, |diff, cx| {
+                diff.set_review_mode(DiffReviewMode::RestoreOnly, cx);
+            })?;
             if let Some(store) = store.upgrade() {
                 store
                     .update(cx, |store, _| {

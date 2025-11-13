@@ -34,6 +34,7 @@ struct BufferDiffInner {
     pending_hunks: SumTree<PendingHunk>,
     base_text: language::BufferSnapshot,
     base_text_exists: bool,
+    review_mode: DiffReviewMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,6 +57,12 @@ pub enum DiffHunkSecondaryStatus {
     NoSecondaryHunk,
     SecondaryHunkAdditionPending,
     SecondaryHunkRemovalPending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiffReviewMode {
+    Stageable,
+    RestoreOnly,
 }
 
 /// A diff hunk resolved to rows in the buffer.
@@ -159,6 +166,7 @@ impl BufferDiffSnapshot {
                 hunks: SumTree::new(buffer),
                 pending_hunks: SumTree::new(buffer),
                 base_text_exists: false,
+                review_mode: DiffReviewMode::Stageable,
             },
             secondary_diff: None,
         }
@@ -175,6 +183,7 @@ impl BufferDiffSnapshot {
                 hunks: SumTree::new(buffer),
                 pending_hunks: SumTree::new(buffer),
                 base_text_exists: false,
+                review_mode: DiffReviewMode::Stageable,
             },
             secondary_diff: None,
         }
@@ -218,6 +227,7 @@ impl BufferDiffSnapshot {
                     hunks,
                     base_text_exists,
                     pending_hunks: SumTree::new(&buffer),
+                    review_mode: DiffReviewMode::Stageable,
                 },
                 secondary_diff: None,
             }
@@ -243,6 +253,7 @@ impl BufferDiffSnapshot {
                         pending_hunks: SumTree::new(&buffer),
                         hunks: compute_hunks(base_text_pair, buffer),
                         base_text_exists,
+                        review_mode: DiffReviewMode::Stageable,
                     },
                     secondary_diff: None,
                 }
@@ -258,6 +269,10 @@ impl BufferDiffSnapshot {
         cx.executor().block(cx.update(|cx| {
             Self::new_with_base_text(buffer, Some(Arc::new(diff_base)), None, None, cx)
         }))
+    }
+
+    pub fn review_mode(&self) -> DiffReviewMode {
+        self.inner.review_mode
     }
 
     pub fn is_empty(&self) -> bool {
@@ -624,6 +639,10 @@ impl BufferDiffInner {
                             secondary_status = DiffHunkSecondaryStatus::OverlapsWithSecondaryHunk;
                         }
                     }
+                }
+
+                if matches!(self.review_mode, DiffReviewMode::RestoreOnly) {
+                    secondary_status = DiffHunkSecondaryStatus::HasSecondaryHunk;
                 }
 
                 return Some(DiffHunk {
@@ -1052,9 +1071,10 @@ impl BufferDiff {
     ) -> Option<Range<Anchor>> {
         log::debug!("set snapshot with secondary {secondary_diff_change:?}");
 
-        let state = &mut self.inner;
+        let previous_review_mode = self.inner.review_mode;
         let new_state = new_snapshot.inner;
-        let (base_text_changed, mut changed_range) =
+        let (base_text_changed, mut changed_range) = {
+            let state = &self.inner;
             match (state.base_text_exists, new_state.base_text_exists) {
                 (false, false) => (true, None),
                 (true, true)
@@ -1065,7 +1085,8 @@ impl BufferDiff {
                     (false, new_state.compare(state, buffer))
                 }
                 _ => (true, Some(text::Anchor::MIN..text::Anchor::MAX)),
-            };
+            }
+        };
 
         if let Some(secondary_changed_range) = secondary_diff_change
             && let Some(secondary_hunk_range) =
@@ -1083,6 +1104,7 @@ impl BufferDiff {
         state.base_text_exists = new_state.base_text_exists;
         state.base_text = new_state.base_text;
         state.hunks = new_state.hunks;
+        state.review_mode = previous_review_mode;
         if base_text_changed || clear_pending_hunks {
             if let Some((first, last)) = state.pending_hunks.first().zip(state.pending_hunks.last())
             {
@@ -1110,6 +1132,10 @@ impl BufferDiff {
         self.inner.base_text_exists
     }
 
+    pub fn review_mode(&self) -> DiffReviewMode {
+        self.inner.review_mode
+    }
+
     pub fn snapshot(&self, cx: &App) -> BufferDiffSnapshot {
         BufferDiffSnapshot {
             inner: self.inner.clone(),
@@ -1118,6 +1144,16 @@ impl BufferDiff {
                 .as_ref()
                 .map(|diff| Box::new(diff.read(cx).snapshot(cx))),
         }
+    }
+
+    pub fn set_review_mode(&mut self, mode: DiffReviewMode, cx: &mut Context<Self>) {
+        if self.inner.review_mode == mode {
+            return;
+        }
+        self.inner.review_mode = mode;
+        cx.emit(BufferDiffEvent::DiffChanged {
+            changed_range: Some(Anchor::MIN..Anchor::MIN),
+        });
     }
 
     pub fn hunks<'a>(

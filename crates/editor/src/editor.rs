@@ -77,7 +77,7 @@ use ::git::{
 use aho_corasick::AhoCorasick;
 use anyhow::{Context as _, Result, anyhow};
 use blink_manager::BlinkManager;
-use buffer_diff::DiffHunkStatus;
+use buffer_diff::{DiffHunkStatus, DiffReviewMode};
 use client::{Collaborator, ParticipantIndex, parse_zed_link};
 use clock::ReplicaId;
 use code_context_menus::{
@@ -243,6 +243,7 @@ pub type RenderDiffHunkControlsFn = Arc<
         Range<Anchor>,
         bool,
         Pixels,
+        DiffReviewMode,
         &Entity<Editor>,
         &mut Window,
         &mut App,
@@ -302,6 +303,7 @@ enum DisplayDiffHunk {
         display_row_range: Range<DisplayRow>,
         multi_buffer_range: Range<Anchor>,
         status: DiffHunkStatus,
+        review_mode: DiffReviewMode,
     },
 }
 
@@ -23657,6 +23659,7 @@ impl EditorSnapshot {
                             hunk.buffer_range,
                         ),
                         is_created_file,
+                        review_mode: hunk.review_mode,
                     }
                 };
 
@@ -24874,11 +24877,12 @@ fn render_diff_hunk_controls(
     hunk_range: Range<Anchor>,
     is_created_file: bool,
     line_height: Pixels,
+    review_mode: DiffReviewMode,
     editor: &Entity<Editor>,
     _window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    h_flex()
+    let mut container = h_flex()
         .h(line_height)
         .mr_1()
         .gap_1()
@@ -24891,8 +24895,10 @@ fn render_diff_hunk_controls(
         .bg(cx.theme().colors().editor_background)
         .gap_1()
         .block_mouse_except_scroll()
-        .shadow_md()
-        .child(if status.has_secondary_hunk() {
+        .shadow_md();
+
+    if matches!(review_mode, DiffReviewMode::Stageable) {
+        let action_button = if status.has_secondary_hunk() {
             Button::new(("stage", row as u64), "Stage")
                 .alpha(if status.is_pending() { 0.66 } else { 1.0 })
                 .tooltip({
@@ -24944,27 +24950,32 @@ fn render_diff_hunk_controls(
                         });
                     }
                 })
-        })
-        .child(
-            Button::new(("restore", row as u64), "Restore")
-                .tooltip({
-                    let focus_handle = editor.focus_handle(cx);
-                    move |_window, cx| {
-                        Tooltip::for_action_in("Restore Hunk", &::git::Restore, &focus_handle, cx)
-                    }
-                })
-                .on_click({
-                    let editor = editor.clone();
-                    move |_event, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            let snapshot = editor.snapshot(window, cx);
-                            let point = hunk_range.start.to_point(&snapshot.buffer_snapshot());
-                            editor.restore_hunks_in_ranges(vec![point..point], window, cx);
-                        });
-                    }
-                })
-                .disabled(is_created_file),
-        )
+        };
+        container = container.child(action_button);
+    }
+
+    container = container.child(
+        Button::new(("restore", row as u64), "Restore")
+            .tooltip({
+                let focus_handle = editor.focus_handle(cx);
+                move |_window, cx| {
+                    Tooltip::for_action_in("Restore Hunk", &::git::Restore, &focus_handle, cx)
+                }
+            })
+            .on_click({
+                let editor = editor.clone();
+                move |_event, window, cx| {
+                    editor.update(cx, |editor, cx| {
+                        let snapshot = editor.snapshot(window, cx);
+                        let point = hunk_range.start.to_point(&snapshot.buffer_snapshot());
+                        editor.restore_hunks_in_ranges(vec![point..point], window, cx);
+                    });
+                }
+            })
+            .disabled(is_created_file),
+    );
+
+    container
         .when(
             !editor.read(cx).buffer().read(cx).all_diff_hunks_expanded(),
             |el| {
