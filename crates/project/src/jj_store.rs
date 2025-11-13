@@ -414,8 +414,25 @@ impl JjStore {
         };
         let task = cx.background_spawn(async move {
             let workspace = repo.workspace()?;
+            let current_change = workspace.current_change_id()?;
             let commits = workspace.recent_commits(limit)?;
-            Ok(commits.into_iter().map(JjCommitSummary::from).collect())
+            let summaries = commits
+                .into_iter()
+                .map(|summary| {
+                    let is_current = current_change
+                        .as_ref()
+                        .is_some_and(|id| id == summary.change_id());
+                    JjCommitSummary {
+                        commit_id: summary.commit_id,
+                        change_id: summary.change_id,
+                        description: SharedString::from(summary.description),
+                        author: SharedString::from(summary.author),
+                        timestamp: summary.timestamp,
+                        is_current,
+                    }
+                })
+                .collect();
+            Ok(summaries)
         });
         Some(task)
     }
@@ -461,18 +478,6 @@ impl JjStore {
             );
             Ok(())
         }))
-    }
-}
-#[cfg(feature = "jj-ui")]
-impl From<CommitSummary> for JjCommitSummary {
-    fn from(summary: CommitSummary) -> Self {
-        Self {
-            commit_id: summary.commit_id,
-            change_id: summary.change_id,
-            description: SharedString::from(summary.description),
-            author: SharedString::from(summary.author),
-            timestamp: summary.timestamp,
-        }
     }
 }
 

@@ -408,17 +408,21 @@ impl JjPanel {
                 let click_commit = commit.clone();
                 let menu_commit = commit.clone();
 
+                let mut title_row = h_flex().gap(rems(0.25)).items_center();
+                if commit.is_current {
+                    title_row = title_row
+                        .child(Label::new("•").color(Color::Accent).size(LabelSize::Small));
+                }
+                title_row = title_row.child(Label::new(description).size(LabelSize::Default));
+
                 let body = v_flex()
                     .gap(rems(0.1))
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .child(Label::new(description).size(LabelSize::Default))
-                            .child(
-                                Label::new(timestamp)
-                                    .color(Color::Muted)
-                                    .size(LabelSize::XSmall),
-                            ),
+                        h_flex().justify_between().child(title_row).child(
+                            Label::new(timestamp)
+                                .color(Color::Muted)
+                                .size(LabelSize::XSmall),
+                        ),
                     )
                     .child(
                         h_flex()
@@ -442,6 +446,13 @@ impl JjPanel {
 
                 let interactive = self.selected_repo.is_some();
                 let mut wrapper = div().rounded(px(4.0)).p(px(4.0)).child(body);
+
+                if commit.is_current {
+                    wrapper = wrapper
+                        .border_1()
+                        .border_color(cx.theme().colors().border_focused)
+                        .bg(cx.theme().colors().surface_background);
+                }
 
                 if interactive {
                     wrapper = wrapper

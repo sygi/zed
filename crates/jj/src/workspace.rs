@@ -198,6 +198,15 @@ impl JjWorkspace {
         Ok(text)
     }
 
+    pub fn current_change_id(&self) -> Result<Option<ChangeId>> {
+        let repo = self.repo_loader.load_at_head()?;
+        let Some(wc_commit_id) = repo.view().get_wc_commit_id(&self.workspace_name) else {
+            return Ok(None);
+        };
+        let commit = repo.store().get_commit(wc_commit_id)?;
+        Ok(Some(commit.change_id().clone()))
+    }
+
     pub fn recent_commits(&self, limit: usize) -> Result<Vec<CommitSummary>> {
         let repo = self.repo_loader.load_at_head()?;
         let store = repo.store();
