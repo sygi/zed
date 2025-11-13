@@ -612,6 +612,7 @@ fn initialize_panels(
         )?;
 
         #[cfg(feature = "jj-ui")]
+        log::info!("attempting to load JJ panel");
         let jj_panel = match JjPanel::load(workspace_handle.clone(), cx.clone()).await {
             Ok(panel) => Some(panel),
             Err(error) => {
@@ -4821,8 +4822,10 @@ mod tests {
             editor::init(cx);
             collab_ui::init(&app_state, cx);
             git_ui::init(cx);
+            log::info!("Before jj ui");
             #[cfg(feature = "jj-ui")]
             jj_ui::init(cx);
+            log::info!("After jj ui");
             project_panel::init(cx);
             outline_panel::init(cx);
             terminal_view::init(cx);

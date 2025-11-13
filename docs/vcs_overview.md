@@ -41,3 +41,11 @@ Write-side operations (stage, unstage, commit, branch, push/pull, init, etc.) st
 
 TODO: remove the 1-2 part, import jj-lib always like before but hide it behind a flag, get a facade for a simple feature and implement it for jj. Then implement a jj panel instead of a git one.
 Keep JJ core helpers in `crates/jj` and UI pieces in `crates/jj_ui` while wiring them through the generic VCS facade.
+
+## Running With JJ UI Enabled
+- Build/launch Zed with the `jj-ui` feature to exercise the new panel and VCS hooks:
+  ```bash
+  RUST_LOG=error,jj::diff=info,jj::workspace=debug \
+  cargo run -p zed --features jj-ui
+  ```
+- Feature flags default to “on” in debug builds, so the JJ panel appears for any workspace containing a `.jj` directory once the feature is enabled at compile time.

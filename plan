@@ -19,7 +19,7 @@ Here’s a rough outline of how we could evolve the current Git-centric stack in
       - Keep the filesystem scanner as-is but have it emit generic VcsRepositoryDescriptor entries:
         {kind: Git|Jj|…, workdir_path, metadata_path}.
       - For Git descriptors we instantiate the existing GitRepository; for jj descriptors we can create
-        lightweight handles that call into jj_support / jj-lib.
+        lightweight handles that call into jj’s tracker helpers / jj-lib.
       - The descriptors flow through WorktreeStoreEvent::WorktreeUpdatedRepositories with a VcsKind field
         so higher layers know which backend to update.
   4. Adapt existing Git logic into an adapter

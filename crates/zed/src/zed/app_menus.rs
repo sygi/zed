@@ -1,5 +1,7 @@
 use collab_ui::collab_panel;
 use gpui::{App, Menu, MenuItem, OsAction};
+#[cfg(feature = "jj-ui")]
+use jj_ui::ToggleFocus as ToggleJjPanel;
 use release_channel::ReleaseChannel;
 use terminal_view::terminal_panel;
 use zed_actions::{ToggleFocus as ToggleDebugPanel, dev};
@@ -44,6 +46,8 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
         MenuItem::action("Collab Panel", collab_panel::ToggleFocus),
         MenuItem::action("Terminal Panel", terminal_panel::ToggleFocus),
         MenuItem::action("Debugger Panel", ToggleDebugPanel),
+        #[cfg(feature = "jj-ui")]
+        MenuItem::action("Jujutsu Panel", ToggleJjPanel),
         MenuItem::separator(),
         MenuItem::action("Diagnostics", diagnostics::Deploy),
         MenuItem::separator(),
