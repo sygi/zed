@@ -21,3 +21,4 @@ ui.workspace = true
 workspace.workspace = true
 jj.workspace = true
 ui_input.workspace = true
+settings.workspace = true

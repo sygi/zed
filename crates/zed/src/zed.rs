@@ -20,6 +20,8 @@ use collections::VecDeque;
 use debugger_ui::debugger_panel::DebugPanel;
 use editor::{Editor, MultiBuffer};
 use extension_host::ExtensionStore;
+#[cfg(feature = "jj-ui")]
+use feature_flags::JjUiFeatureFlag;
 use feature_flags::{FeatureFlagAppExt, PanicFeatureFlag};
 use fs::Fs;
 use futures::future::Either;
@@ -50,6 +52,8 @@ use paths::{
     local_debug_file_relative_path, local_settings_file_relative_path,
     local_tasks_file_relative_path,
 };
+#[cfg(feature = "jj-ui")]
+use project::project_settings::{PreferredVcs, ProjectSettings};
 use project::{DirectoryLister, DisableAiSettings, ProjectItem};
 use project_panel::ProjectPanel;
 use prompt_store::PromptBuilder;
@@ -60,7 +64,7 @@ use rope::Rope;
 use search::project_search::ProjectSearchBar;
 use settings::{
     BaseKeymap, DEFAULT_KEYMAP_PATH, InvalidSettingsError, KeybindSource, KeymapFile,
-    KeymapFileLoadResult, Settings, SettingsStore, VIM_KEYMAP_PATH,
+    KeymapFileLoadResult, Settings, SettingsLocation, SettingsStore, VIM_KEYMAP_PATH,
     initial_local_debug_tasks_content, initial_project_settings_content, initial_tasks_content,
     update_settings_file,
 };
@@ -580,7 +584,39 @@ fn initialize_panels(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    cx.spawn_in(window, async move |workspace_handle, cx| {
+    #[cfg(feature = "jj-ui")]
+    let jj_flag_enabled = cx.has_flag::<JjUiFeatureFlag>();
+
+    cx.spawn_in(window, async move |workspace_handle, mut cx| {
+        #[cfg(feature = "jj-ui")]
+        let prefer_jj_panel = if jj_flag_enabled {
+            let settings_prefer_jj = workspace_handle
+                .read_with(cx, |workspace, app| {
+                    workspace
+                        .project()
+                        .read(app)
+                        .visible_worktrees(app)
+                        .next()
+                        .map(|worktree| {
+                            let settings_location = SettingsLocation {
+                                worktree_id: worktree.read(app).id(),
+                                path: RelPath::empty(),
+                            };
+                            ProjectSettings::get(Some(settings_location), app).preferred_vcs
+                                == PreferredVcs::Jj
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            log::info!(
+                "VCS preference: jj-ui flag enabled, settings prefer jj = {settings_prefer_jj}"
+            );
+            settings_prefer_jj
+        } else {
+            log::info!("VCS preference: jj-ui flag disabled, defaulting to Git panel");
+            false
+        };
+
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
         let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
@@ -597,35 +633,55 @@ fn initialize_panels(
             project_panel,
             outline_panel,
             terminal_panel,
-            git_panel,
             channels_panel,
             notification_panel,
             debug_panel,
         ) = futures::try_join!(
             project_panel,
             outline_panel,
-            git_panel,
             terminal_panel,
             channels_panel,
             notification_panel,
             debug_panel,
         )?;
 
+        #[cfg(not(feature = "jj-ui"))]
+        let git_panel = Some(git_panel.await?);
+
         #[cfg(feature = "jj-ui")]
-        log::info!("attempting to load JJ panel");
-        let jj_panel = match JjPanel::load(workspace_handle.clone(), cx.clone()).await {
-            Ok(panel) => Some(panel),
-            Err(error) => {
-                log::warn!("failed to load JJ panel: {error:?}");
+        let (git_panel, jj_panel) = {
+            let git_panel_option = if prefer_jj_panel {
+                log::info!("Preferring JJ panel: omitting Git panel from dock");
                 None
-            }
+            } else {
+                log::info!("Using Git panel (JJ preference inactive)");
+                Some(git_panel.await?)
+            };
+
+            let jj_panel = if prefer_jj_panel {
+                log::info!("attempting to load JJ panel");
+                match JjPanel::load(workspace_handle.clone(), cx.clone()).await {
+                    Ok(panel) => Some(panel),
+                    Err(error) => {
+                        log::warn!("failed to load JJ panel: {error:?}; falling back to Git panel");
+                        None
+                    }
+                }
+            } else {
+                log::info!("JJ panel not requested; skipping load");
+                None
+            };
+
+            (git_panel_option, jj_panel)
         };
 
         workspace_handle.update_in(cx, |workspace, window, cx| {
             workspace.add_panel(project_panel, window, cx);
             workspace.add_panel(outline_panel, window, cx);
             workspace.add_panel(terminal_panel, window, cx);
-            workspace.add_panel(git_panel, window, cx);
+            if let Some(panel) = git_panel {
+                workspace.add_panel(panel, window, cx);
+            }
             workspace.add_panel(channels_panel, window, cx);
             workspace.add_panel(notification_panel, window, cx);
             workspace.add_panel(debug_panel, window, cx);

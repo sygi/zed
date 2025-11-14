@@ -1,8 +1,14 @@
 use collab_ui::collab_panel;
+#[cfg(feature = "jj-ui")]
+use feature_flags::{FeatureFlagAppExt as _, JjUiFeatureFlag};
 use gpui::{App, Menu, MenuItem, OsAction};
 #[cfg(feature = "jj-ui")]
 use jj_ui::ToggleFocus as ToggleJjPanel;
+#[cfg(feature = "jj-ui")]
+use project::project_settings::{PreferredVcs, ProjectSettings};
 use release_channel::ReleaseChannel;
+#[cfg(feature = "jj-ui")]
+use settings::Settings;
 use terminal_view::terminal_panel;
 use zed_actions::{ToggleFocus as ToggleDebugPanel, dev};
 
@@ -46,12 +52,21 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
         MenuItem::action("Collab Panel", collab_panel::ToggleFocus),
         MenuItem::action("Terminal Panel", terminal_panel::ToggleFocus),
         MenuItem::action("Debugger Panel", ToggleDebugPanel),
-        #[cfg(feature = "jj-ui")]
-        MenuItem::action("Jujutsu Panel", ToggleJjPanel),
+    ];
+    #[cfg(feature = "jj-ui")]
+    if cx.has_flag::<JjUiFeatureFlag>()
+        && matches!(
+            ProjectSettings::get_global(cx).preferred_vcs,
+            PreferredVcs::Jj
+        )
+    {
+        view_items.push(MenuItem::action("Jujutsu Panel", ToggleJjPanel));
+    }
+    view_items.extend([
         MenuItem::separator(),
         MenuItem::action("Diagnostics", diagnostics::Deploy),
         MenuItem::separator(),
-    ];
+    ]);
 
     if ReleaseChannel::try_global(cx) == Some(ReleaseChannel::Dev) {
         view_items.push(MenuItem::action(

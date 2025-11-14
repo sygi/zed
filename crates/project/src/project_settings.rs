@@ -72,6 +72,10 @@ pub struct ProjectSettings {
 
     /// Configuration for session-related features
     pub session: SessionSettings,
+
+    #[cfg(feature = "jj-ui")]
+    /// Preferred version control integration when multiple are available.
+    pub preferred_vcs: PreferredVcs,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -83,6 +87,30 @@ pub struct SessionSettings {
     ///
     /// Default: true
     pub restore_unsaved_buffers: bool,
+}
+
+#[cfg(feature = "jj-ui")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreferredVcs {
+    Git,
+    Jj,
+}
+
+#[cfg(feature = "jj-ui")]
+impl Default for PreferredVcs {
+    fn default() -> Self {
+        PreferredVcs::Git
+    }
+}
+
+#[cfg(feature = "jj-ui")]
+impl From<settings::VcsPreferenceContent> for PreferredVcs {
+    fn from(value: settings::VcsPreferenceContent) -> Self {
+        match value {
+            settings::VcsPreferenceContent::Git => PreferredVcs::Git,
+            settings::VcsPreferenceContent::Jj => PreferredVcs::Jj,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -443,6 +471,12 @@ impl Settings for ProjectSettings {
         let diagnostics = content.diagnostics.as_ref().unwrap();
         let lsp_pull_diagnostics = diagnostics.lsp_pull_diagnostics.as_ref().unwrap();
         let inline_diagnostics = diagnostics.inline.as_ref().unwrap();
+        #[cfg(feature = "jj-ui")]
+        let preferred_vcs = project
+            .vcs
+            .as_ref()
+            .map(|settings| settings.default.into())
+            .unwrap_or_default();
 
         let git = content.git.as_ref().unwrap();
         let git_settings = GitSettings {
@@ -520,6 +554,8 @@ impl Settings for ProjectSettings {
             session: SessionSettings {
                 restore_unsaved_buffers: content.session.unwrap().restore_unsaved_buffers.unwrap(),
             },
+            #[cfg(feature = "jj-ui")]
+            preferred_vcs,
         }
     }
 }

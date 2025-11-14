@@ -9447,6 +9447,7 @@ dependencies = [
  "language",
  "log",
  "project",
+ "settings",
  "time",
  "ui",
  "ui_input",

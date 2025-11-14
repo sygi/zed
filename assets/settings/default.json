@@ -1250,6 +1250,11 @@
   // Globs to match files that will be considered "hidden". These files can be hidden from the
   // project panel by toggling the "hide_hidden" setting.
   "hidden_files": ["**/.*"],
+  // Which version control integration to surface when multiple providers are available.
+  // This setting only has an effect when Jujutsu support is enabled.
+  "vcs": {
+    "default": "git"
+  },
   // Git gutter behavior configuration.
   "git": {
     // Control whether the git gutter is shown. May take 2 values:

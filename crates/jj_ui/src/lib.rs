@@ -563,7 +563,8 @@ impl Panel for JjPanel {
 }
 
 impl Render for JjPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let window = _window;
         let header = h_flex()
             .justify_between()
             .items_center()

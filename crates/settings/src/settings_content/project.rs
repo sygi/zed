@@ -21,6 +21,10 @@ pub struct ProjectSettingsContent {
     #[serde(flatten)]
     pub worktree: WorktreeSettingsContent,
 
+    #[cfg(feature = "jj-ui")]
+    #[serde(default)]
+    pub vcs: Option<VcsSettingsContent>,
+
     /// Configuration for language servers.
     ///
     /// The following settings can be overridden for specific language servers:
@@ -101,6 +105,34 @@ pub struct WorktreeSettingsContent {
     /// Treat the files matching these globs as hidden files. You can hide hidden files in the project panel.
     /// Default: ["**/.*"]
     pub hidden_files: Option<Vec<String>>,
+}
+
+#[cfg(feature = "jj-ui")]
+#[skip_serializing_none]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom)]
+pub struct VcsSettingsContent {
+    #[serde(default = "default_vcs_preference")]
+    pub default: VcsPreferenceContent,
+}
+
+#[cfg(feature = "jj-ui")]
+const fn default_vcs_preference() -> VcsPreferenceContent {
+    VcsPreferenceContent::Git
+}
+
+#[cfg(feature = "jj-ui")]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VcsPreferenceContent {
+    Git,
+    Jj,
+}
+
+#[cfg(feature = "jj-ui")]
+impl crate::merge_from::MergeFrom for VcsPreferenceContent {
+    fn merge_from(&mut self, other: &Self) {
+        *self = *other;
+    }
 }
 
 #[skip_serializing_none]
