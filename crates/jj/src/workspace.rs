@@ -3,12 +3,15 @@ use jj_lib::backend::{ChangeId, CommitId};
 use jj_lib::commit::Commit;
 use jj_lib::config::StackedConfig;
 use jj_lib::conflicts::{ConflictMarkerStyle, MaterializedTreeValue, materialize_tree_value};
+use jj_lib::fileset::FilesetExpression;
+use jj_lib::gitignore::GitIgnoreFile;
+use jj_lib::matchers::Matcher;
 use jj_lib::ref_name::WorkspaceNameBuf;
 use jj_lib::repo::{ReadonlyRepo, Repo as _, RepoLoader, StoreFactories};
 use jj_lib::repo_path::RepoPath;
 use jj_lib::settings::UserSettings;
 use jj_lib::transaction::Transaction;
-use jj_lib::working_copy::CheckoutOptions;
+use jj_lib::working_copy::{CheckoutOptions, SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{self, DefaultWorkspaceLoaderFactory, WorkspaceLoaderFactory};
 use log::{debug, warn};
 use std::collections::HashSet;
@@ -123,6 +126,7 @@ impl JjWorkspace {
     }
 
     pub fn edit_change(&self, change_id: &ChangeId) -> Result<()> {
+        self.snapshot_working_copy()?;
         let (mut workspace, repo) = self.load_workspace_and_repo()?;
         let commit = Self::resolve_change_commit(&repo, change_id)?;
         let mut tx = repo.start_transaction();
@@ -136,6 +140,7 @@ impl JjWorkspace {
     }
 
     pub fn rename_change(&self, change_id: &ChangeId, new_description: &str) -> Result<()> {
+        self.snapshot_working_copy()?;
         let (mut workspace, repo) = self.load_workspace_and_repo()?;
         let commit = Self::resolve_change_commit(&repo, change_id)?;
         let mut tx = repo.start_transaction();
@@ -205,6 +210,90 @@ impl JjWorkspace {
         };
         let commit = repo.store().get_commit(wc_commit_id)?;
         Ok(Some(commit.change_id().clone()))
+    }
+
+    fn snapshot_working_copy(&self) -> Result<()> {
+        let mut workspace = self.load_workspace()?;
+        let mut repo = workspace.repo_loader().load_at_head()?;
+        let workspace_name = workspace.workspace_name().to_owned();
+        let Some(wc_commit_id) = repo.view().get_wc_commit_id(&workspace_name) else {
+            return Ok(());
+        };
+        let mut wc_commit = repo.store().get_commit(wc_commit_id)?;
+        let auto_track_matcher = self.snapshot_auto_tracking_matcher()?;
+        let options = self.snapshot_options(&*auto_track_matcher)?;
+        let mut locked_ws = workspace.start_working_copy_mutation()?;
+        match WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo)
+            .map_err(|err| anyhow!(err))?
+        {
+            WorkingCopyFreshness::Fresh => {}
+            WorkingCopyFreshness::Updated(wc_operation) => {
+                repo = repo.reload_at(&wc_operation)?;
+                let Some(id) = repo.view().get_wc_commit_id(&workspace_name) else {
+                    return Ok(());
+                };
+                wc_commit = repo.store().get_commit(id)?;
+            }
+            WorkingCopyFreshness::WorkingCopyStale => {
+                return Err(anyhow!(
+                    "working copy is stale; run `jj workspace update-stale` before switching revisions"
+                ));
+            }
+            WorkingCopyFreshness::SiblingOperation => {
+                return Err(anyhow!(
+                    "working copy operation diverged; run `jj workspace update-stale`"
+                ));
+            }
+        }
+
+        let (new_tree_id, _stats) = locked_ws.locked_wc().snapshot(&options)?;
+        let mut op_id = repo.op_id().clone();
+        if new_tree_id != *wc_commit.tree_id() {
+            let mut tx = repo.start_transaction();
+            tx.set_is_snapshot(true);
+            let repo_mut = tx.repo_mut();
+            let new_commit = repo_mut
+                .rewrite_commit(&wc_commit)
+                .set_tree_id(new_tree_id)
+                .write()?;
+            repo_mut.set_wc_commit(workspace_name.clone(), new_commit.id().clone())?;
+            let rebased = repo_mut.rebase_descendants()?;
+            if rebased > 0 {
+                debug!(
+                    target: "jj::workspace",
+                    "snapshot rebased {rebased} descendant commits"
+                );
+            }
+            let new_repo = tx.commit("snapshot working copy")?;
+            op_id = new_repo.op_id().clone();
+        }
+        locked_ws.finish(op_id)?;
+        Ok(())
+    }
+
+    fn snapshot_auto_tracking_matcher(&self) -> Result<Box<dyn Matcher>> {
+        let expression = FilesetExpression::all();
+        Ok(expression.to_matcher())
+    }
+
+    fn snapshot_options<'a>(
+        &self,
+        start_tracking_matcher: &'a dyn Matcher,
+    ) -> Result<SnapshotOptions<'a>> {
+        let fsmonitor_settings = self.settings().fsmonitor_settings()?;
+        let max_new_file_size = u64::MAX;
+        Ok(SnapshotOptions {
+            base_ignores: GitIgnoreFile::empty(),
+            fsmonitor_settings,
+            progress: None,
+            start_tracking_matcher,
+            max_new_file_size,
+            conflict_marker_style: ConflictMarkerStyle::default(),
+        })
+    }
+
+    fn settings(&self) -> &UserSettings {
+        self.repo_loader.settings()
     }
 
     pub fn recent_commits(&self, limit: usize) -> Result<Vec<CommitSummary>> {
