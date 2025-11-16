@@ -11,6 +11,7 @@ use gpui::{
 use jj::{short_change_hash, short_commit_hash};
 use log::{info, warn};
 use project::{JjCommitSummary, JjRepositorySummary, Project, ProjectEntryId};
+use std::time::Duration;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use ui::{
     AnyElement, ButtonStyle, ContextMenu, Modal, ModalFooter, ModalHeader, Section, prelude::*,
@@ -61,6 +62,8 @@ pub struct JjPanel {
     focus_handle: FocusHandle,
     commits: Vec<JjCommitSummary>,
     is_loading: bool,
+    show_loading_indicator: bool,
+    loading_indicator_task: Option<Task<()>>,
     error: Option<SharedString>,
     _task: Option<Task<()>>,
     repositories: Vec<JjRepositorySummary>,
@@ -86,6 +89,8 @@ impl JjPanel {
                 focus_handle,
                 commits: Vec::new(),
                 is_loading: true,
+                show_loading_indicator: false,
+                loading_indicator_task: None,
                 error: None,
                 _task: None,
                 repositories: Vec::new(),
@@ -113,6 +118,7 @@ impl JjPanel {
     fn request_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let jj_store = self.project.read(cx).jj_store().cloned();
         self.ensure_store_subscription(window, cx);
+        self.cancel_loading_indicator();
         let mut updated = false;
         match &jj_store {
             Some(store) => {
@@ -146,17 +152,21 @@ impl JjPanel {
         let Some(jj_store) = jj_store else {
             self.error = Some("JJ support unavailable".into());
             self.is_loading = false;
+            self.show_loading_indicator = false;
             cx.notify();
             return;
         };
         if self.repositories.is_empty() {
             self.error = Some("No JJ repositories detected".into());
             self.is_loading = false;
+            self.show_loading_indicator = false;
             cx.notify();
             return;
         }
         self.is_loading = true;
+        self.show_loading_indicator = false;
         self.error = None;
+        self.start_loading_indicator_timer(window, cx);
         cx.notify();
         let selected_repo = self.selected_repo;
         if let Some(task) =
@@ -169,6 +179,8 @@ impl JjPanel {
                         let _ = panel.update(cx, |panel, cx| {
                             panel.commits = commits;
                             panel.is_loading = false;
+                            panel.show_loading_indicator = false;
+                            panel.loading_indicator_task = None;
                             panel.error = None;
                             cx.notify();
                         });
@@ -179,6 +191,8 @@ impl JjPanel {
                         let _ = panel.update(cx, |panel, cx| {
                             panel.error = Some(format!("{err}").into());
                             panel.is_loading = false;
+                            panel.show_loading_indicator = false;
+                            panel.loading_indicator_task = None;
                             cx.notify();
                         });
                     }
@@ -187,7 +201,31 @@ impl JjPanel {
         } else {
             self.error = Some("No JJ repositories detected".into());
             self.is_loading = false;
+            self.show_loading_indicator = false;
             cx.notify();
+        }
+    }
+
+    fn start_loading_indicator_timer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_loading_indicator();
+        let panel = cx.entity().downgrade();
+        let timer = cx.background_executor().timer(Duration::from_millis(500));
+        self.loading_indicator_task = Some(cx.spawn_in(window, async move |_, cx| {
+            timer.await;
+            if let Some(panel) = panel.upgrade() {
+                let _ = panel.update(cx, |panel, cx| {
+                    if panel.is_loading {
+                        panel.show_loading_indicator = true;
+                        cx.notify();
+                    }
+                });
+            }
+        }));
+    }
+
+    fn cancel_loading_indicator(&mut self) {
+        if self.loading_indicator_task.take().is_some() {
+            self.show_loading_indicator = false;
         }
     }
 
@@ -581,7 +619,7 @@ impl Render for JjPanel {
         let repo_selector = self.render_repository_selector(window, cx);
         let repo_label = self.current_repository_label();
 
-        let content: AnyElement = if self.is_loading {
+        let content: AnyElement = if self.show_loading_indicator {
             Label::new("Loading commits…").into_any_element()
         } else if let Some(error) = &self.error {
             Label::new(error.clone())
