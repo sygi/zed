@@ -4,8 +4,9 @@ use editor::Editor;
 use feature_flags::{FeatureFlagAppExt as _, JjUiFeatureFlag};
 use gpui::{
     Action, App, AsyncWindowContext, ClickEvent, Context, Corner, DismissEvent, Entity,
-    EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString,
-    Subscription, Task, WeakEntity, Window, actions, anchored, deferred, px, rems,
+    EventEmitter, FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
+    Pixels, Point, SharedString, Subscription, Task, WeakEntity, Window, actions, anchored,
+    deferred, px, rems,
 };
 use jj::{short_change_hash, short_commit_hash};
 use log::{info, warn};
@@ -282,9 +283,10 @@ impl JjPanel {
             return;
         };
         let project = self.project.clone();
+        let panel = cx.entity().downgrade();
         let _ = workspace.update(cx, |workspace, cx| {
             workspace.toggle_modal(window, cx, move |window, cx| {
-                RenameChangeModal::new(project.clone(), target.clone(), window, cx)
+                RenameChangeModal::new(project.clone(), panel.clone(), target.clone(), window, cx)
             });
         });
     }
@@ -707,6 +709,7 @@ struct RenameChangeModal {
     focus_handle: FocusHandle,
     input: Entity<InputField>,
     project: Entity<Project>,
+    panel: WeakEntity<JjPanel>,
     target: CommitMenuTarget,
     is_submitting: bool,
     error: Option<SharedString>,
@@ -715,6 +718,7 @@ struct RenameChangeModal {
 impl RenameChangeModal {
     fn new(
         project: Entity<Project>,
+        panel: WeakEntity<JjPanel>,
         target: CommitMenuTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -738,6 +742,7 @@ impl RenameChangeModal {
             focus_handle: cx.focus_handle(),
             input,
             project,
+            panel,
             target,
             is_submitting: false,
             error: None,
@@ -761,6 +766,7 @@ impl RenameChangeModal {
         };
         let change_id = self.target.commit.change_id.clone();
         let repo_id = self.target.repo_id;
+        let panel = self.panel.clone();
         if let Some(task) = store.update(cx, |store, cx| {
             store.rename_change(repo_id, change_id.clone(), description.clone(), cx)
         }) {
@@ -768,6 +774,14 @@ impl RenameChangeModal {
             let modal = cx.entity().downgrade();
             cx.spawn_in(window, async move |_, cx| match task.await {
                 Ok(_) => {
+                    if let Some(panel) = panel.upgrade() {
+                        let panel_clone = panel.clone();
+                        let _ = cx.update(|window, cx| {
+                            panel_clone.update(cx, |panel, cx| {
+                                panel.request_refresh(window, cx);
+                            })
+                        });
+                    }
                     if let Some(modal) = modal.upgrade() {
                         let _ = modal.update(cx, |_, cx| cx.emit(DismissEvent));
                     }
@@ -784,6 +798,20 @@ impl RenameChangeModal {
                 }
             })
             .detach();
+        }
+    }
+
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key.eq_ignore_ascii_case("enter")
+            && event.keystroke.modifiers == Modifiers::default()
+        {
+            window.prevent_default();
+            self.submit(window, cx);
         }
     }
 }
@@ -831,9 +859,22 @@ impl Render for RenameChangeModal {
 
         let section = Section::new().child(body);
 
-        Modal::new("rename-change", None)
+        let modal = Modal::new("rename-change", None)
             .header(header)
             .section(section)
-            .footer(footer)
+            .footer(footer);
+
+        let colors = cx.theme().colors();
+        div()
+            .id("rename-change-modal")
+            .w(rems(32.))
+            .max_w(rems(40.))
+            .elevation_3(cx)
+            .rounded_lg()
+            .bg(colors.elevated_surface_background)
+            .on_key_down(cx.listener(|modal, event, window, cx| {
+                modal.handle_key_down(event, window, cx);
+            }))
+            .child(modal)
     }
 }
